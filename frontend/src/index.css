@@ -24,8 +24,9 @@
   --blue-100: #e3eefb;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(74, 14, 14, .06), 0 4px 16px rgba(74, 14, 14, .06);
-  font-family: Inter, "Segoe UI", "Noto Sans", "Noto Sans Devanagari", "Noto Sans Tamil",
-    "Noto Sans Kannada", "Noto Sans Oriya", system-ui, sans-serif;
+  font-family: Inter, "Segoe UI", "Noto Sans", "Nirmala UI", "Noto Sans Devanagari", "Noto Sans Bengali",
+    "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Malayalam", "Noto Sans Gujarati",
+    "Noto Sans Gurmukhi", "Noto Sans Oriya", system-ui, sans-serif;
   color: var(--ink);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -57,7 +58,7 @@ h1, h2, h3, h4 { margin: 0; letter-spacing: -.01em; }
 }
 .side a.nav:hover { background: var(--maroon-700); }
 .side a.nav.active { background: var(--red); color: #fff; }
-.side a.nav .badge { margin-left: auto; }
+.side a.nav .badge { margin-inline-start: auto; }
 .side-foot { margin-top: auto; font-size: calc(11px * var(--fs, 1)); color: #c99a9a; padding: 12px 10px 0; line-height: 1.5; }
 
 .main { min-width: 0; display: flex; flex-direction: column; }
@@ -76,13 +77,13 @@ h1, h2, h3, h4 { margin: 0; letter-spacing: -.01em; }
 .card-h { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; flex-wrap: wrap; }
 .card-h h3 { font-size: calc(15px * var(--fs, 1)); }
 .card-h .hint { color: var(--ink-3); font-size: calc(12.5px * var(--fs, 1)); }
-.card-h .right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.card-h .right { margin-inline-start: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .card-b { padding: 4px 16px 16px; }
 .eyebrow { font-size: calc(11px * var(--fs, 1)); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--red); }
 .page-h { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
 .page-h h1 { font-size: calc(24px * var(--fs, 1)); }
 .page-h p { margin: 4px 0 0; color: var(--ink-2); font-size: calc(14px * var(--fs, 1)); max-width: 760px; }
-.page-h .right { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.page-h .right { margin-inline-start: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 
 .grid { display: grid; gap: 18px; }
 .g-kpi { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
@@ -129,7 +130,7 @@ h1, h2, h3, h4 { margin: 0; letter-spacing: -.01em; }
 .badge { background: var(--orange); color: #fff; font-size: calc(11px * var(--fs, 1)); font-weight: 700; border-radius: 999px; padding: 1px 7px; }
 
 table.t { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--fs, 1)); }
-.t th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: calc(11.5px * var(--fs, 1)); text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.t th { text-align: start; font-weight: 600; color: var(--ink-3); font-size: calc(11.5px * var(--fs, 1)); text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .t td { padding: 9px 10px; border-bottom: 1px solid #f6eaea; vertical-align: middle; }
 .t tr:last-child td { border-bottom: 0; }
 .t tr.click { cursor: pointer; }
@@ -165,7 +166,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--f
 .heat { border-collapse: separate; border-spacing: 3px; font-size: calc(12px * var(--fs, 1)); }
 .heat th { font-weight: 600; color: var(--ink-3); font-size: calc(11px * var(--fs, 1)); padding: 2px 4px; white-space: nowrap; }
 .heat td.c { width: 46px; height: 28px; text-align: center; border-radius: 6px; font-weight: 650; font-size: calc(11px * var(--fs, 1)); cursor: pointer; }
-.heat td.name { white-space: nowrap; padding-right: 8px; font-size: calc(12.5px * var(--fs, 1)); }
+.heat td.name { white-space: nowrap; padding-inline-end: 8px; font-size: calc(12.5px * var(--fs, 1)); }
 .c.stocked_out { background: #c62828; color: #fff; }
 .c.critical { background: #ef6c00; color: #fff; }
 .c.high { background: #ffb74d; color: #5a3000; }
@@ -176,7 +177,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--f
 /* ---------- briefing / AI ---------- */
 .ai-card { border: 1px solid #e3def7; background: linear-gradient(180deg, #fbfaff, #fff); }
 .ai-card h4 { font-size: calc(16px * var(--fs, 1)); line-height: 1.35; }
-.ai-card ul { margin: 6px 0 0; padding-left: 18px; }
+.ai-card ul { margin: 6px 0 0; padding-inline-start: 18px; }
 .ai-card li { margin: 4px 0; font-size: calc(13.5px * var(--fs, 1)); }
 
 /* ---------- recommendation ---------- */
@@ -260,7 +261,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--f
   .g-2e { grid-template-columns: minmax(0, 1fr); }
   .map { height: 360px; }
   .pill { white-space: normal; }
-  .page-h .right { margin-left: 0; }
+  .page-h .right { margin-inline-start: 0; }
 }
 
 /* ---- language choice (first visit) ---- */
@@ -287,4 +288,20 @@ table.t { width: 100%; border-collapse: collapse; font-size: calc(13px * var(--f
 .font-size .btn.big { border-radius: 0 8px 8px 0; margin-left: -1px; font-size: calc(15px * var(--fs, 1)); font-weight: 700; }
 
 /* Indic scripts need a little more line height to avoid clipped vowel marks. */
-:lang(ta), :lang(hi), :lang(kn), :lang(or) { line-height: 1.5; }
+:lang(ta), :lang(hi), :lang(kn), :lang(or), :lang(bn), :lang(te), :lang(mr), :lang(gu), :lang(ml), :lang(pa),
+:lang(as), :lang(mai), :lang(ne), :lang(kok), :lang(doi), :lang(sa), :lang(brx), :lang(sat), :lang(mni) { line-height: 1.5; }
+
+/* Scripts most devices lack a default font for (the web font is fetched on demand, see i18n/index.jsx). */
+:lang(ur), :lang(ks) { font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Segoe UI", system-ui, sans-serif; line-height: 1.8; }
+:lang(sd) { font-family: "Noto Naskh Arabic", "Segoe UI", system-ui, sans-serif; line-height: 1.7; }
+:lang(sat) { font-family: "Noto Sans Ol Chiki", "Nirmala UI", system-ui, sans-serif; }
+:lang(mni) { font-family: "Noto Sans Meetei Mayek", "Nirmala UI", system-ui, sans-serif; }
+
+/* Right-to-left (Urdu, Kashmiri, Sindhi): flex/grid already mirror; fix the few physical offsets. */
+[dir="rtl"] .drawer { right: auto; left: 0; }
+[dir="rtl"] .font-size .btn.big { border-radius: 8px 0 0 8px; margin-left: 0; margin-right: -1px; }
+[dir="rtl"] .font-size .btn:first-child { border-radius: 0 8px 8px 0; }
+[dir="rtl"] .num, [dir="rtl"] .mono, [dir="rtl"] .leaflet-container, [dir="rtl"] .recharts-wrapper { direction: ltr; }
+@media (max-width: 820px) {
+  [dir="rtl"] .side { left: auto; right: 0; transform: translateX(100%); }
+}

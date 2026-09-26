@@ -14,14 +14,14 @@
 
 | Deck promise | Where it is in the prototype |
 |---|---|
-| **Voice-first reporting, < 60 s, own language** | `Voice report` page. Record up to 60 s; **Gemini** (multimodal audio) returns transcript + English translation + validated structured report, reads the numbers back in the worker's language, and asks a follow-up question for anything missing. 8 languages (hi, ta, kn, or, te, bn, mr, en). |
+| **Voice-first reporting, < 60 s, own language** | `Voice report` page. Record up to 60 s; **Gemini** (multimodal audio) returns transcript + English translation + validated structured report, reads the numbers back in the worker's language, and asks a follow-up question for anything missing. English + all 22 scheduled Indian languages (UI, read-back, IVR phrases); Kashmiri, Sindhi, Bodo, Santali and Manipuri UI text is partial and falls back to English. |
 | **Feature phones: USSD / SMS / IVR** | `USSD · SMS · IVR` page: working `*123#` USSD menu (Africa's Talking-style gateway protocol), SMS shortcode grammar (`PCM 120 ORS 40 BED 4`), and a **Dialogflow CX** webhook for IVR calls. |
 | **Demand forecasting, stock-outs flagged 2-3 weeks ahead** | Damped Holt-Winters per PHC × drug (1,200 series, vectorised). A warning fires when projected stock hits zero *before the next scheduled indent*. **Walk-forward backtest: 81% of real stock-outs flagged ≥ 14 days ahead** (67% precision, 79% weekly accuracy). Shown on `Models & HMIS`. |
 | **Redistribution recommender under transport-cost constraints** | Mixed-integer program (HiGHS): trip cost (fixed + ₹/km + inter-state paperwork), urgency- and criticality-weighted shortage penalty, donor safety stock, **multi-drug consolidation per lane**. Produces the deck's own example: *"PHC-14 has surplus paracetamol; PHC-22 needs it in 9 days."* |
 | **One-tap approval → delivery tracking** | `Redistribution` page: Approve → Dispatch → Delivered. Stock moves out of the donor's ledger and into the recipient's, and forecasts recompute instantly. |
 | **Outbreak anomaly detection** | Weekday-adjusted robust z-scores on fever / diarrhoea / respiratory footfall; ≥ 2 PHCs within 50 km → cluster. Detects the seeded Koraput diarrhoea and Gorakhpur fever clusters. **Gemini drafts the IDSP alert** in English + the local language. Linked drugs (ORS/zinc, paracetamol/ACT) get outbreak-adjusted forecasts. |
-| **District / State / National dashboards** | `Command centre` with map, KPIs, resilience scores, district roll-up, **Gemini daily briefing** in 5 languages and an **Ask Pulse** copilot grounded in the live snapshot. |
-| **Row-level access by jurisdiction** | Signed role tokens: national, state, district (DHO) and PHC personas. Every API filters rows by scope and a DHO cannot widen it (mirrors BigQuery row access policies in `bigquery/schema.sql`). |
+| **District / State / National dashboards** | `Command centre` with map, KPIs, resilience scores, district roll-up, **Gemini daily briefing** in any of the 23 languages and an **Ask Pulse** copilot grounded in the live snapshot. |
+| **Row-level access by jurisdiction** | Signed role tokens: national, state, district (DHO) and PHC personas. Every API filters rows by scope and a DHO cannot widen it (mirrors BigQuery row access policies in `bigquery/schema.sql`). Only the donor side (its DHO, state or national) can release stock; tokens expire after a 12-hour shift. |
 | **HMIS-compatible** | Facilities keyed by HMIS NIN; monthly HMIS-style CSV export (OPD, syndromic counts, receipts, consumption, closing balance, stock-out days). |
 | **Scales state by state** | Engine decomposes the MILP per state (cross-state lanes are a Phase-3 toggle); BigQuery schema is partitioned by day and clustered by state; BQML / Vertex AI training scripts included. |
 
@@ -96,7 +96,7 @@ npm run dev                     # http://localhost:5173
 # or: npm run build and open http://localhost:8000 (FastAPI serves frontend/dist)
 ```
 
-Tests: `cd backend && python -m pytest -q` (13 end-to-end API tests, including the deck
+Tests: `cd backend && python -m pytest -q` (65 end-to-end API tests, including the deck
 scenario, row-level scoping, the transfer ledger, USSD/SMS/IVR and the Gemini path with a mocked model).
 
 ## Deploy to Cloud Run
@@ -117,7 +117,7 @@ store to BigQuery / Firestore; the engine only depends on the table shapes in `b
 
 1. **Command centre** (national): 120 PHCs, predicted stock-outs, 2 outbreak clusters on the map. Generate the **AI briefing** and switch it to Hindi.
 2. **Outbreak signals:** Koraput diarrhoea cluster (4 PHCs, up to 4.8× expected). Click **Draft IDSP alert**, then show that ORS/zinc forecasts were raised automatically.
-3. Switch role to **DHO Tiruvannamalai** (row-level scope). **Redistribution:** *"PHC-14 has surplus paracetamol; PHC-22 needs it in 9 days."* **Approve → Dispatch → Delivered**, and show that stock moved.
+3. Switch role to **DHO Tiruvannamalai** (row-level scope): the lane *"PHC-14 has surplus paracetamol; PHC-22 needs it in 9 days"* shows as awaiting the donor side, because PHC-14 is in Villupuram. Switch to **DHO Villupuram** (or **State Health Officer, Tamil Nadu**), then **Approve → Dispatch → Delivered**, and show that stock moved.
 4. **Voice report** for PHC-22 in Tamil: speak for about 20 s. Gemini returns the transcript, translation and fields, reads back in Tamil, and asks a follow-up. Submit, and the forecast updates.
 5. **USSD · SMS · IVR:** dial `*123#` on the feature phone, then send an SMS report and simulate a Hindi IVR call.
 6. **Models & HMIS:** 81% of stock-outs flagged ≥ 2 weeks ahead in backtest; HMIS CSV export; BigQuery / Vertex scripts.

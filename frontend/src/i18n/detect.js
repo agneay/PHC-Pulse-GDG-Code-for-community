@@ -2,22 +2,18 @@
 // Works offline: coordinates never leave the device (no reverse-geocoding service). Border areas
 // resolve to the nearest listed town, so the result is a suggestion the user confirms, never forced.
 
+// State -> [name, primary language, ...other widely spoken scheduled languages].
 export const STATES = {
-  AN: ['Andaman & Nicobar', 'hi'], AP: ['Andhra Pradesh', 'te'], AR: ['Arunachal Pradesh', 'en'],
-  AS: ['Assam', 'as'], BR: ['Bihar', 'hi'], CH: ['Chandigarh', 'hi'], CG: ['Chhattisgarh', 'hi'],
-  DD: ['Dadra & Nagar Haveli and Daman & Diu', 'gu'], DL: ['Delhi', 'hi'], GA: ['Goa', 'kok'],
-  GJ: ['Gujarat', 'gu'], HR: ['Haryana', 'hi'], HP: ['Himachal Pradesh', 'hi'], JK: ['Jammu & Kashmir', 'ur'],
-  JH: ['Jharkhand', 'hi'], KA: ['Karnataka', 'kn'], KL: ['Kerala', 'ml'], LA: ['Ladakh', 'hi'],
-  LD: ['Lakshadweep', 'ml'], MP: ['Madhya Pradesh', 'hi'], MH: ['Maharashtra', 'mr'], MN: ['Manipur', 'mni'],
-  ML: ['Meghalaya', 'en'], MZ: ['Mizoram', 'lus'], NL: ['Nagaland', 'en'], OD: ['Odisha', 'or'],
-  PY: ['Puducherry', 'ta'], PB: ['Punjab', 'pa'], RJ: ['Rajasthan', 'hi'], SK: ['Sikkim', 'ne'],
-  TN: ['Tamil Nadu', 'ta'], TG: ['Telangana', 'te'], TR: ['Tripura', 'bn'], UP: ['Uttar Pradesh', 'hi'],
-  UK: ['Uttarakhand', 'hi'], WB: ['West Bengal', 'bn'],
-}
-
-export const LANGUAGE_NAMES = {
-  as: 'Assamese', bn: 'Bengali', gu: 'Gujarati', kok: 'Konkani', lus: 'Mizo', ml: 'Malayalam',
-  mni: 'Manipuri', mr: 'Marathi', ne: 'Nepali', pa: 'Punjabi', te: 'Telugu', ur: 'Urdu',
+  AN: ['Andaman & Nicobar', 'hi', 'bn', 'ta'], AP: ['Andhra Pradesh', 'te', 'ur'], AR: ['Arunachal Pradesh', 'en', 'hi'],
+  AS: ['Assam', 'as', 'brx', 'bn'], BR: ['Bihar', 'hi', 'mai', 'ur'], CH: ['Chandigarh', 'hi', 'pa'],
+  CG: ['Chhattisgarh', 'hi'], DD: ['Dadra & Nagar Haveli and Daman & Diu', 'gu', 'mr'], DL: ['Delhi', 'hi', 'pa', 'ur'],
+  GA: ['Goa', 'kok', 'mr'], GJ: ['Gujarat', 'gu', 'sd'], HR: ['Haryana', 'hi', 'pa'], HP: ['Himachal Pradesh', 'hi'],
+  JK: ['Jammu & Kashmir', 'ur', 'ks', 'doi'], JH: ['Jharkhand', 'hi', 'sat', 'bn'], KA: ['Karnataka', 'kn', 'ur', 'kok'],
+  KL: ['Kerala', 'ml'], LA: ['Ladakh', 'hi', 'ur'], LD: ['Lakshadweep', 'ml'], MP: ['Madhya Pradesh', 'hi'],
+  MH: ['Maharashtra', 'mr', 'hi'], MN: ['Manipur', 'mni'], ML: ['Meghalaya', 'en'], MZ: ['Mizoram', 'en'],
+  NL: ['Nagaland', 'en'], OD: ['Odisha', 'or', 'sat'], PY: ['Puducherry', 'ta', 'ml', 'te'], PB: ['Punjab', 'pa', 'hi'],
+  RJ: ['Rajasthan', 'hi', 'sd'], SK: ['Sikkim', 'ne'], TN: ['Tamil Nadu', 'ta'], TG: ['Telangana', 'te', 'ur'],
+  TR: ['Tripura', 'bn'], UP: ['Uttar Pradesh', 'hi', 'ur'], UK: ['Uttarakhand', 'hi', 'sa'], WB: ['West Bengal', 'bn', 'ne', 'sat'],
 }
 
 // [lat, lon, state]: capitals, district towns and border towns, dense enough that the nearest
@@ -75,12 +71,15 @@ export async function detectRegion(timeout = 8000) {
   try {
     const pos = await position(timeout)
     const st = stateAt(pos.coords.latitude, pos.coords.longitude)
-    if (st) return { state: st, stateName: STATES[st][0], lang: STATES[st][1], source: 'location' }
+    if (st) {
+      const [stateName, lang, ...also] = STATES[st]
+      return { state: st, stateName, lang, also, source: 'location' }
+    }
   } catch { /* denied, unavailable or timed out: fall back to the browser's language list */ }
-  const known = new Set(Object.values(STATES).map(([, l]) => l))
+  const known = new Set(Object.values(STATES).flatMap(([, ...ls]) => ls))
   for (const tag of navigator.languages || [navigator.language]) {
     const base = (tag || '').toLowerCase().split('-')[0]
-    if (base !== 'en' && known.has(base)) return { state: null, stateName: null, lang: base, source: 'browser' }
+    if (base !== 'en' && known.has(base)) return { state: null, stateName: null, lang: base, also: [], source: 'browser' }
   }
   return null
 }

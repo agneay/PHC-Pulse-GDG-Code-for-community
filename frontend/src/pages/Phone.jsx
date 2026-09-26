@@ -131,6 +131,9 @@ export default function Phone() {
             <div className="muted small">{t('phone.ivrIntro')}</div>
             <div className="lang-tabs">
               {['hi', 'ta', 'kn', 'or', 'en'].map((l) => <button key={l} className={ivr.lang === l ? 'on' : ''} onClick={() => setIvr({ ...ivr, lang: l })}>{meta.languages[l].native}</button>)}
+              <select className="select" value={ivr.lang} onChange={(e) => setIvr({ ...ivr, lang: e.target.value })} aria-label="IVR language">
+                {Object.entries(meta.languages).map(([c, l]) => <option key={c} value={c} lang={c}>{l.native} · {l.name}</option>)}
+              </select>
             </div>
             <div className="parsed-grid">
               {[['pcm', 'phone.fPcm'], ['ors', 'phone.fOrs'], ['beds', 'field.beds_occupied'], ['staff', 'field.staff_present'], ['opd', 'field.opd_count']].map(([k, l]) => (

@@ -170,7 +170,9 @@ def _optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
             eta_hours=round(km / config.AVG_SPEED_KMPH + 2.0, 1), cross_state=cross,
             cross_district=phcs[k]["district_code"] != phcs[i]["district_code"],
             urgency_days=min(l["needed_in_days"] for l in s["lines"]))
-        sig = f"{k}-{i}-" + "-".join(f"{l['drug_code']}:{l['qty']}" for l in s["lines"])
+        # Identity = lane + drugs, not quantities: a report elsewhere nudges quantities on every
+        # recompute, and that must not turn an open "Approve" button into a stale-plan error.
+        sig = f"{k}-{i}-" + "-".join(sorted(l["drug_code"] for l in s["lines"]))
         s["id"] = "REC-" + hashlib.sha1(sig.encode()).hexdigest()[:8].upper()
         out.append(s)
     out.sort(key=lambda s: s["urgency_days"])

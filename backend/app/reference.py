@@ -89,15 +89,31 @@ STATE_DRUG_FACTOR = {
     "KA": {"ASV": 1.6, "MET": 1.2},
 }
 
+# English + the 22 languages of the Eighth Schedule. `rtl` marks Perso-Arabic scripts.
 LANGUAGES = {
     "en": {"name": "English", "native": "English", "bcp47": "en-IN"},
     "hi": {"name": "Hindi", "native": "हिन्दी", "bcp47": "hi-IN"},
+    "bn": {"name": "Bengali", "native": "বাংলা", "bcp47": "bn-IN"},
+    "te": {"name": "Telugu", "native": "తెలుగు", "bcp47": "te-IN"},
+    "mr": {"name": "Marathi", "native": "मराठी", "bcp47": "mr-IN"},
     "ta": {"name": "Tamil", "native": "தமிழ்", "bcp47": "ta-IN"},
+    "ur": {"name": "Urdu", "native": "اردو", "bcp47": "ur-IN", "rtl": True},
+    "gu": {"name": "Gujarati", "native": "ગુજરાતી", "bcp47": "gu-IN"},
     "kn": {"name": "Kannada", "native": "ಕನ್ನಡ", "bcp47": "kn-IN"},
     "or": {"name": "Odia", "native": "ଓଡ଼ିଆ", "bcp47": "or-IN"},
-    "te": {"name": "Telugu", "native": "తెలుగు", "bcp47": "te-IN"},
-    "bn": {"name": "Bengali", "native": "বাংলা", "bcp47": "bn-IN"},
-    "mr": {"name": "Marathi", "native": "मराठी", "bcp47": "mr-IN"},
+    "ml": {"name": "Malayalam", "native": "മലയാളം", "bcp47": "ml-IN"},
+    "pa": {"name": "Punjabi", "native": "ਪੰਜਾਬੀ", "bcp47": "pa-IN"},
+    "as": {"name": "Assamese", "native": "অসমীয়া", "bcp47": "as-IN"},
+    "mai": {"name": "Maithili", "native": "मैथिली", "bcp47": "mai-IN"},
+    "sat": {"name": "Santali", "native": "ᱥᱟᱱᱛᱟᱲᱤ", "bcp47": "sat-IN"},
+    "ks": {"name": "Kashmiri", "native": "کٲشُر", "bcp47": "ks-IN", "rtl": True},
+    "ne": {"name": "Nepali", "native": "नेपाली", "bcp47": "ne-IN"},
+    "sd": {"name": "Sindhi", "native": "سنڌي", "bcp47": "sd-IN", "rtl": True},
+    "kok": {"name": "Konkani", "native": "कोंकणी", "bcp47": "kok-IN"},
+    "doi": {"name": "Dogri", "native": "डोगरी", "bcp47": "doi-IN"},
+    "mni": {"name": "Manipuri (Meitei)", "native": "ꯃꯤꯇꯩꯂꯣꯟ", "bcp47": "mni-IN"},
+    "brx": {"name": "Bodo", "native": "बड़ो", "bcp47": "brx-IN"},
+    "sa": {"name": "Sanskrit", "native": "संस्कृतम्", "bcp47": "sa-IN"},
 }
 
 DRUG_BY_CODE = {d["code"]: d for d in DRUGS}

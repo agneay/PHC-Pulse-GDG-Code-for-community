@@ -1,25 +1,50 @@
 const TOKEN_KEY = 'phcpulse.token'
+const PERSONA_KEY = 'phcpulse.persona'
 
-function token() {
-  try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
+const load = (k) => { try { return localStorage.getItem(k) } catch { return null } }
+const save = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k) } catch { /* private mode */ } }
+const token = () => load(TOKEN_KEY)
+
+export function setToken(t) { save(TOKEN_KEY, t) }
+
+/** Sign in as a demo persona; remembered so an expired session can be renewed transparently. */
+export async function signIn(personaId) {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ persona_id: personaId }),
+  })
+  if (!res.ok) throw new Error(`Sign-in failed (${res.status})`)
+  const r = await res.json()
+  setToken(r.token)
+  save(PERSONA_KEY, personaId)
+  return r
 }
 
-export function setToken(t) {
-  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch { /* private mode */ }
+// Write endpoints require a signed token. Start the demo as the national persona.
+export async function ensureToken() {
+  if (!token()) await signIn(load(PERSONA_KEY) || 'national')
+}
+
+async function authFetch(path, init = {}, retried = false) {
+  const t = token()
+  const res = await fetch(path, { ...init, headers: { ...(init.headers || {}), ...(t ? { Authorization: `Bearer ${t}` } : {}) } })
+  if (res.status === 401 && !retried) {
+    // Tokens expire after a shift: renew as the same persona and repeat the request once.
+    setToken(null)
+    await signIn(load(PERSONA_KEY) || 'national')
+    return authFetch(path, init, true)
+  }
+  return res
 }
 
 async function request(method, path, body, { form = false } = {}) {
   const headers = {}
-  const t = token()
-  if (t) headers.Authorization = `Bearer ${t}`
   let payload
   if (form) payload = body
   else if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
     payload = JSON.stringify(body)
   }
-  const res = await fetch(path, { method, headers, body: payload })
-  if (res.status === 401) { setToken(null) }
+  const res = await authFetch(path, { method, headers, body: payload })
   const ct = res.headers.get('content-type') || ''
   const data = ct.includes('json') ? await res.json() : await res.text()
   if (!res.ok) {
@@ -41,11 +66,8 @@ export const api = {
 
 // Read-aloud audio (Gemini TTS) for devices without a voice in the language.
 export async function ttsAudio(text, language) {
-  const t = token()
-  const res = await fetch('/api/tts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) },
-    body: JSON.stringify({ text, language }),
+  const res = await authFetch('/api/tts', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, language }),
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
@@ -54,18 +76,10 @@ export async function ttsAudio(text, language) {
   return res.blob()
 }
 
-// Write endpoints require a signed token. Start the demo as the national persona.
-export async function ensureToken() {
-  if (token()) return
-  const r = await api.post('/api/auth/login', { persona_id: 'national' })
-  setToken(r.token)
-}
-
 // File downloads go through fetch (not a plain link) so the Authorization header, and thus the
 // caller's jurisdiction, applies to the export too.
 export async function download(path, filename) {
-  const t = token()
-  const res = await fetch(path, { headers: t ? { Authorization: `Bearer ${t}` } : {} })
+  const res = await authFetch(path)
   if (!res.ok) throw new Error(`Download failed (${res.status})`)
   const url = URL.createObjectURL(await res.blob())
   const a = document.createElement('a')

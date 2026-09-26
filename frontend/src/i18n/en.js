@@ -467,7 +467,7 @@ export default {
   'model.anGemini': 'Gemini drafts the IDSP alert (English + local language) with the recommended response.',
   'model.google': 'Google AI & Cloud',
   'model.notConfigured': 'not configured',
-  'model.gGemini': 'Multimodal voice-report understanding in 8 Indian languages; briefings; copilot; outbreak alerts; read-aloud',
+  'model.gGemini': 'Multimodal voice-report understanding in all 22 scheduled Indian languages; briefings; copilot; outbreak alerts; read-aloud',
   'model.gDialogflow': 'IVR agent for feature phones',
   'model.gRun': 'Single container serving the API and dashboard',
   'model.gBigQuery': 'Warehouse schema + row-level security by state',
@@ -476,4 +476,11 @@ export default {
   'model.hmisText': 'Facilities are keyed by their HMIS **National Identification Number (NIN)**. Historical daily data is backfilled from HMIS, and PHC Pulse exports a monthly facility report (OPD, syndromic counts, item receipts, consumption, closing balance, stock-out days) in a flat HMIS-style layout.',
   'model.hmisGeneral': 'The same redistribution engine generalises to **blood banks, oxygen and ambulances**: any resource with a stock, a forecastable demand and a transport cost.',
   'model.hmisSynthetic': 'Data in this prototype is synthetic, generated to match HMIS PHC volumes, NLEM drug lists, monsoon seasonality and state epidemiology. No patient-level data is stored.',
+
+  // audit follow-ups
+  'warn.low_confidence': 'The recording was unclear (Gemini confidence {reported}%). Check every number before submitting.',
+  'redis.awaitingDonor': 'Awaiting release by the donor side ({district} DHO, state or national officer)',
+  'redis.overdue': 'not dispatched · {n}d',
+  'redis.overdueTitle': "Approved {n} days ago but not dispatched: the donor's stock is still reserved. Dispatch it, or cancel to release the stock.",
+  'gate.draft': 'Draft translation, pending review by a native speaker.',
 }

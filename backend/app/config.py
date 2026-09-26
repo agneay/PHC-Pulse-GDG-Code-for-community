@@ -23,6 +23,12 @@ if AUTH_SECRET in ("phc-pulse-demo-secret-change-me", "change-me") and os.getenv
     # K_SERVICE is set by Cloud Run: never serve publicly with a secret that is in the repo.
     raise RuntimeError("PHC_AUTH_SECRET must be set to a strong random value on Cloud Run")
 
+TOKEN_TTL_SECONDS = int(os.getenv("PHC_TOKEN_TTL_SECONDS", str(12 * 3600)))   # one working shift
+# Browser origins allowed to call the API cross-site. The dashboard is served from the same origin
+# and the Dialogflow / USSD / SMS webhooks are server-to-server, so none are needed by default.
+CORS_ORIGINS = [o.strip() for o in os.getenv("PHC_CORS_ORIGINS", "").split(",") if o.strip()]
+DISPATCH_OVERDUE_DAYS = int(os.getenv("PHC_DISPATCH_OVERDUE_DAYS", "3"))
+
 # Seed: history length and the simulated "today". Defaults to the real current date.
 HISTORY_DAYS = int(os.getenv("PHC_HISTORY_DAYS", "180"))
 SEED = int(os.getenv("PHC_SEED", "42"))

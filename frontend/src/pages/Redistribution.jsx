@@ -7,6 +7,7 @@ import { Card, ErrorBox, Kpi, Loading, useAsync } from '../components/ui'
 import { useI18n } from '../i18n'
 import { api } from '../lib/api'
 import { drugLabel, fmt, inr, unitLabel } from '../lib/format'
+import { inScope } from '../lib/labels'
 
 const STEPS = ['approved', 'in_transit', 'delivered']
 
@@ -22,6 +23,9 @@ export default function Redistribution() {
   const drug = Object.fromEntries(meta.drugs.map((d) => [d.code, d]))
   const dname = (code) => drugLabel(drug[code], lang)
   const canApprove = meta.user.role !== 'phc'
+  // Approval releases the donor's stock, so only the donor side (or a state / national officer) can.
+  const canRelease = (s) => canApprove && inScope(meta.user.scope, s.from)
+  const dname2 = Object.fromEntries(meta.districts.map((d) => [d.code, d.name]))
 
   if (error) return <ErrorBox error={error} />
   if (loading && !data) return <Loading label={t('redis.solving')} />
@@ -107,13 +111,13 @@ export default function Redistribution() {
                   {s.cross_state ? <span className="pill surplus">{t('redis.interState')}</span> : s.cross_district ? <span className="pill grey">{t('redis.crossDistrict')}</span> : <span className="pill grey">{t('redis.sameDistrict')}</span>}
                   {s.lines.length > 1 && <span className="pill ok">{t('redis.consolidated', { n: s.lines.length })}</span>}
                 </div>
-                {canApprove && (
+                {canRelease(s) ? (
                   <div className="row">
                     <button className="btn primary sm" onClick={() => approve(s)} disabled={busy === s.id}>
                       {busy === s.id ? <span className="spinner" /> : <Icon name="check" size={14} />}{t('redis.approve')}
                     </button>
                   </div>
-                )}
+                ) : canApprove && <div className="muted small">{t('redis.awaitingDonor', { district: dname2[s.from.district_code] || s.from.district_code })}</div>}
               </div>
             ))}
             {!data.shipments.length && !st.failed && <div className="empty">{t('redis.none')}</div>}
@@ -146,7 +150,8 @@ export default function Redistribution() {
                       </div>
                       {tr.eta_at && <div className="muted small">{t('redis.etaAt', { at: tr.eta_at.replace('T', ' ') })}</div>}
                     </td>
-                    <td className="small">{tr.approved_by}<div className="muted">{tr.created_at.replace('T', ' ')}</div></td>
+                    <td className="small">{tr.approved_by}<div className="muted">{tr.created_at.replace('T', ' ')}</div>
+                      {tr.overdue && <span className="pill red" title={t('redis.overdueTitle', { n: tr.age_days })}>{t('redis.overdue', { n: tr.age_days })}</span>}</td>
                     <td>
                       {tr.status === 'approved' && <button className="btn sm orange" disabled={busy === `t${tr.id}`} onClick={() => advance(tr, 'in_transit')}>{t('redis.dispatch')}</button>}
                       {tr.status === 'in_transit' && <button className="btn sm primary" disabled={busy === `t${tr.id}`} onClick={() => advance(tr, 'delivered')}>{t('redis.markDelivered')}</button>}

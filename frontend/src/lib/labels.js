@@ -16,3 +16,11 @@ export function scopeLabel(scope, t, meta, fallback) {
   if (scope?.state) return stateName(meta, scope.state)
   return t('scope.india')
 }
+
+/** Same rule as the server's in_scope(): is this PHC inside the user's jurisdiction? */
+export function inScope(scope, p) {
+  if (scope?.phc_id && p.id !== scope.phc_id) return false
+  if (scope?.district && p.district_code !== scope.district) return false
+  if (scope?.state && p.state_code !== scope.state) return false
+  return true
+}

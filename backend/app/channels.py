@@ -7,6 +7,7 @@ from typing import Optional
 
 from . import gemini, nlu, service
 from .db import get_conn, rows
+from .phrases import phrase
 from .reference import DRUGS
 
 _submitted = set()   # USSD sessions already submitted (idempotency)
@@ -149,7 +150,11 @@ def sms(phone: str, text: str) -> dict:
 def dialogflow_webhook(body: dict) -> dict:
     """Dialogflow CX webhook. Expects session parameters collected by the IVR agent:
     caller_phone | phc_code, plus any of drug codes (pcm, ors, ...), beds, staff, opd, and
-    optional free-text `utterance`. Tag 'submit-report' persists the report."""
+    optional free-text `utterance`. Tag 'submit-report' persists the report.
+
+    Numbers that look implausible (misheard "fifty"/"fifteen", boxes vs strips) are read back
+    with a "please check" question and NOT saved; the agent sets `confirmed=true` after the
+    caller says yes and calls 'submit-report' again (session parameter `needs_confirmation`)."""
     params = (body.get("sessionInfo") or {}).get("parameters") or {}
     tag = (body.get("fulfillmentInfo") or {}).get("tag", "submit-report")
     lang = (body.get("languageCode") or "en").split("-")[0]
@@ -172,10 +177,32 @@ def dialogflow_webhook(body: dict) -> dict:
         rep["stock"] += [{**s, "kind": k} for k in ("received", "discarded") for s in p[k]]
     phc_row = service.get_phc(phc_id)
     rep["confirmation"] = gemini.confirmation_text(rep, lang, phc_row["name"])
+    warnings = service.check_report(phc_id, rep)
+    confirmed = str(params.get("confirmed", "")).strip().lower() in ("true", "yes", "1")
     if tag == "submit-report":
+        if warnings and not confirmed:
+            items = "; ".join(_spoken_warning(x, lang) for x in warnings)
+            return _df_reply(f"{rep['confirmation']} {phrase(lang, 'ivr_check', items=items)}",
+                             {"needs_confirmation": True})
+        rep["warnings"] = warnings
         service.apply_report(phc_id, rep, "ivr", lang, "dialogflow-cx", reporter=str(params.get("caller_phone")))
-    return _df_reply(rep["confirmation"])
+    return _df_reply(rep["confirmation"], {"needs_confirmation": False})
 
 
-def _df_reply(text: str) -> dict:
-    return {"fulfillment_response": {"messages": [{"text": {"text": [text]}}]}}
+def _spoken_warning(w: dict, lang: str) -> str:
+    """'Paracetamol 1500, usually about 150' in the caller's language."""
+    if w["field"] == "confidence":
+        return phrase(lang, "unclear")
+    if w["drug_code"]:
+        d = next(d for d in DRUGS if d["code"] == w["drug_code"])
+        label = d["names"].get(lang, d["name"])
+    else:
+        label = phrase(lang, w["field"])
+    return f"{label} {w['reported']:g}, {phrase(lang, 'usual', n=w['expected'])}"
+
+
+def _df_reply(text: str, params: Optional[dict] = None) -> dict:
+    out = {"fulfillment_response": {"messages": [{"text": {"text": [text]}}]}}
+    if params:
+        out["session_info"] = {"parameters": params}
+    return out

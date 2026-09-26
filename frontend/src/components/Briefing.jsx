@@ -6,12 +6,10 @@ import Icon from './Icon'
 import { SpeakButton } from './Speak'
 import { Card, EngineTag } from './ui'
 
-const LANGS = ['en', 'hi', 'ta', 'kn', 'or']
-
 export default function Briefing() {
   const { scopeQs, meta } = useApp()
   const { t, lang: uiLang } = useI18n()
-  const [lang, setLang] = useState(LANGS.includes(uiLang) ? uiLang : 'en')   // follows the site language
+  const [lang, setLang] = useState(meta.languages[uiLang] ? uiLang : 'en')   // follows the site language
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -29,7 +27,7 @@ export default function Briefing() {
       right={<>
         <select className="select" value={lang} aria-label={t('brief.language')}
           onChange={(e) => { setLang(e.target.value); if (data) load(e.target.value) }}>
-          {LANGS.map((l) => <option key={l} value={l}>{meta.languages[l].native}</option>)}
+          {Object.entries(meta.languages).map(([c, l]) => <option key={c} value={c} lang={c}>{l.native} · {l.name}</option>)}
         </select>
         <button className="btn primary sm" onClick={() => load()} disabled={busy}>
           {busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}{data ? t('brief.regenerate') : t('brief.generate')}

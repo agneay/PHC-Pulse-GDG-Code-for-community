@@ -165,6 +165,12 @@ def check_report(phc_id: int, report: dict) -> list:
                        f"Check the number and unit.", code, code="receipt_large", reported=rec,
                  expected=round(daily * 30), days=round(rec / daily))
 
+    conf = report.get("confidence")
+    if conf is not None and conf < 0.6:
+        # Gemini itself was unsure (noise, fast speech, code-switching): every number needs a look.
+        warn("confidence", f"The recording was unclear (confidence {conf:.0%}). Check every number.",
+             code="low_confidence", reported=round(conf * 100), expected=60)
+
     opd = report.get("opd_count")
     if opd is not None:
         hist = A["foot"]["opd"][i, -28:]
@@ -196,20 +202,29 @@ def approve_recommendation(rec: dict, user: dict) -> dict:
     reason = "; ".join(
         f"{rec['from']['code']} has surplus {DRUG_BY_CODE[l['drug_code']]['name']}; "
         f"{rec['to']['code']} needs it in {l['needed_in_days']} days" for l in rec["lines"])
+    dup = open_transfer_for(rec["id"])       # double click / two officers at once
+    if dup:
+        return dup
     with get_conn() as conn:
-        dup = rows(conn, "SELECT id FROM transfers WHERE code=?", (rec["id"],))
-        if dup:
-            return get_transfer(dup[0]["id"])
+        n = conn.execute("SELECT COUNT(*) FROM transfers WHERE code LIKE ?", (rec["id"] + "%",)).fetchone()[0]
         cur = conn.execute(
             "INSERT INTO transfers (code, from_phc, to_phc, lines_json, distance_km, cost_inr,"
             " eta_hours, status, reason, created_at, updated_at, approved_by, history_json)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rec["id"], rec["from"]["id"], rec["to"]["id"], json.dumps(lines), rec["distance_km"],
+            (f"{rec['id']}-{n + 1}", rec["from"]["id"], rec["to"]["id"], json.dumps(lines), rec["distance_km"],
              rec["cost_inr"], rec["eta_hours"], "approved", reason, ts, ts, user["name"],
              json.dumps([{"status": "approved", "at": ts, "by": user["name"]}])))
         tid = cur.lastrowid
     engine.invalidate()
     return get_transfer(tid)
+
+
+def open_transfer_for(rec_id: str) -> Optional[dict]:
+    """The approved / in-transit transfer created from recommendation `rec_id`, if any."""
+    with get_conn() as conn:
+        r = rows(conn, "SELECT id FROM transfers WHERE code LIKE ? AND status IN ('approved','in_transit')"
+                       " ORDER BY id DESC LIMIT 1", (rec_id + "-%",))
+    return get_transfer(r[0]["id"]) if r else None
 
 
 def set_transfer_status(tid: int, status: str, user: dict) -> dict:
@@ -259,6 +274,10 @@ def list_transfers(where: str = "1=1", params=()) -> list:
             l["drug_name"] = DRUG_BY_CODE[l["drug_code"]]["name"]
             l["unit"] = DRUG_BY_CODE[l["drug_code"]]["unit"]
         t["history"] = json.loads(t.pop("history_json") or "[]")
+        # Approved but never dispatched: the donor's stock stays reserved, so say so loudly.
+        age = (datetime.now() - datetime.fromisoformat(t["created_at"])).total_seconds() / 86400
+        t["age_days"] = int(age)
+        t["overdue"] = t["status"] == "approved" and age >= config.DISPATCH_OVERDUE_DAYS
         if t["status"] == "in_transit":
             started = next((h["at"] for h in t["history"] if h["status"] == "in_transit"), None)
             if started:
@@ -346,6 +365,9 @@ def snapshot(result: dict, scope: dict) -> dict:
         "escalations": [{"phc": e["phc"]["code"], "drug": DRUG_BY_CODE[e["drug_code"]]["name"],
                          "qty": e["qty"], "needed_in_days": e["needed_in_days"]}
                         for e in sc["escalations"][:10]],
+        "overdue_transfers": [{"from": t["from_code"], "to": t["to_code"], "approved_days_ago": t["age_days"]}
+                              for t in list_transfers("t.status='approved'")
+                              if t["overdue"] and (t["from_phc"] in sc["ids"] or t["to_phc"] in sc["ids"])][:10],
         "silent_phcs": [{"phc": p["code"] + " " + p["name"], "days_since_report": p["days_since_report"]}
                         for p in sorted(sc["phcs"], key=lambda p: -p["days_since_report"]) if p["stale"]][:10],
         "weakest_phcs": [{"phc": p["code"] + " " + p["name"], "score": p["score"],

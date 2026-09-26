@@ -30,7 +30,9 @@ async def lifespan(_app):
 
 app = FastAPI(title="PHC Pulse API", version="1.0.0", lifespan=lifespan,
               description="A heartbeat for every health centre in India.")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+if config.CORS_ORIGINS:
+    app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
+                       allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 
 def result(cross_state: bool = False):
@@ -225,10 +227,15 @@ def approve(rec_id: str, cross_state: bool = False, user: dict = Depends(auth.re
     r = result(cross_state)
     rec = next((s for s in r["plan"]["shipments"] if s["id"] == rec_id), None)
     if not rec:
-        raise HTTPException(409, "Recommendation is stale - the plan was recomputed. Refresh.")
-    sc = user.get("scope", {})
-    if not (auth.in_scope(sc, rec["from"]) or auth.in_scope(sc, rec["to"])):
-        raise HTTPException(403, "Outside your jurisdiction")
+        # Double click / second officer: the first approval already took this lane off the plan.
+        open_t = service.open_transfer_for(rec_id)
+        if open_t:
+            return open_t
+        raise HTTPException(409, "This lane is no longer recommended (stock changed since the plan "
+                                 "was shown). Refresh to see the current plan.")
+    if not auth.can_release(user, rec["from"]):
+        raise HTTPException(403, f"Only an officer responsible for {rec['from']['code']} (the donor) "
+                                 "can release its stock")
     return service.approve_recommendation(rec, user)
 
 

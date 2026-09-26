@@ -24,6 +24,14 @@ the caller's language, fills slots, and calls the PHC Pulse webhook to save the 
 4. **Webhook:** `POST https://<cloud-run-url>/api/dialogflow/webhook`, tag `submit-report` on the
    final page's fulfillment. The response's `fulfillment_response` contains the read-back in the
    caller's language, which the agent speaks before hanging up.
+5. **Plausibility check:** if a number looks wrong for that PHC (e.g. "fifteen" heard for "fifty",
+   boxes counted as strips), the webhook does **not** save. It reads the numbers back with a
+   "please check, say yes if correct" question and sets the session parameter
+   `needs_confirmation = true`. Add a route on that condition: on a yes intent set
+   `confirmed = true` and call `submit-report` again (the report is then saved with the warnings
+   kept for audit); otherwise go back to the question pages to collect the corrected numbers.
+6. **Languages:** the read-back and the check prompt exist for English and all 22 scheduled
+   languages (`backend/app/phrases.py`); pick them with the agent's language code.
 
 ## Test without telephony
 

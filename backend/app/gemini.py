@@ -18,6 +18,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from . import config, nlu
+from .phrases import phrase
 from .reference import DRUGS, LANGUAGES
 
 log = logging.getLogger("phc.gemini")
@@ -162,48 +163,18 @@ def parse_report(*, phc: dict, district: str, state: str, language: str,
     return {"report": _fallback_report(text, language, phc, previous), "engine": "rules-fallback"}
 
 
-CONFIRM_TEMPLATES = {
-    "en": "Thank you. Recorded for {phc}: {items}.",
-    "hi": "धन्यवाद। {phc} के लिए दर्ज किया गया: {items}।",
-    "ta": "நன்றி. {phc} க்காக பதிவு செய்யப்பட்டது: {items}.",
-    "kn": "ಧನ್ಯವಾದಗಳು. {phc} ಗಾಗಿ ದಾಖಲಿಸಲಾಗಿದೆ: {items}.",
-    "or": "ଧନ୍ୟବାଦ। {phc} ପାଇଁ ରେକର୍ଡ କରାଗଲା: {items}।",
-}
-FIELD_LABELS = {
-    "en": {"beds_occupied": "beds occupied", "staff_present": "staff present", "opd_count": "OPD patients"},
-    "hi": {"beds_occupied": "भरे बिस्तर", "staff_present": "उपस्थित स्टाफ", "opd_count": "ओपीडी मरीज़"},
-    "ta": {"beds_occupied": "நிரம்பிய படுக்கைகள்", "staff_present": "பணியிலுள்ள ஊழியர்கள்", "opd_count": "புறநோயாளிகள்"},
-    "kn": {"beds_occupied": "ಭರ್ತಿಯಾದ ಹಾಸಿಗೆಗಳು", "staff_present": "ಹಾಜರಿರುವ ಸಿಬ್ಬಂದಿ", "opd_count": "ಹೊರರೋಗಿಗಳು"},
-    "or": {"beds_occupied": "ଭର୍ତ୍ତି ଶଯ୍ୟା", "staff_present": "ଉପସ୍ଥିତ କର୍ମଚାରୀ", "opd_count": "ଓପିଡି ରୋଗୀ"},
-}
-KIND_LABELS = {
-    "en": {"received": "received", "discarded": "discarded"},
-    "hi": {"received": "प्राप्त", "discarded": "नष्ट"},
-    "ta": {"received": "பெறப்பட்டது", "discarded": "அழிக்கப்பட்டது"},
-    "kn": {"received": "ಸ್ವೀಕರಿಸಲಾಗಿದೆ", "discarded": "ನಾಶಪಡಿಸಲಾಗಿದೆ"},
-    "or": {"received": "ପ୍ରାପ୍ତ", "discarded": "ନଷ୍ଟ"},
-}
-FOLLOW_UP = {
-    "en": "How many beds are occupied and how many staff are present today?",
-    "hi": "आज कितने बिस्तर भरे हैं और कितने स्टाफ उपस्थित हैं?",
-    "ta": "இன்று எத்தனை படுக்கைகள் நிரம்பியுள்ளன, எத்தனை ஊழியர்கள் வந்துள்ளனர்?",
-    "kn": "ಇಂದು ಎಷ್ಟು ಹಾಸಿಗೆಗಳು ಭರ್ತಿಯಾಗಿವೆ ಮತ್ತು ಎಷ್ಟು ಸಿಬ್ಬಂದಿ ಹಾಜರಿದ್ದಾರೆ?",
-    "or": "ଆଜି କେତୋଟି ଶଯ୍ୟା ଭର୍ତ୍ତି ଅଛି ଏବଂ କେତେ ଜଣ କର୍ମଚାରୀ ଉପସ୍ଥିତ ଅଛନ୍ତି?",
-}
-
-
 def confirmation_text(rep: dict, language: str, phc_name: str) -> str:
-    lang = language if language in CONFIRM_TEMPLATES else "en"
+    """Deterministic read-back (no Gemini needed) in any of the supported languages."""
     parts = []
     for s in rep.get("stock", []):
         d = next(d for d in DRUGS if d["code"] == s["drug_code"])
-        name = d["names"].get(lang, d["name"]) if lang != "en" else d["name"]
-        tag = f" ({KIND_LABELS[lang][s['kind']]})" if s.get("kind") in KIND_LABELS[lang] else ""
+        name = d["names"].get(language, d["name"])
+        tag = f" ({phrase(language, s['kind'])})" if s.get("kind") in ("received", "discarded") else ""
         parts.append(f"{name} {s['quantity']:g}{tag}")
     for k in ("beds_occupied", "staff_present", "opd_count"):
         if rep.get(k) is not None:
-            parts.append(f"{FIELD_LABELS[lang][k]} {rep[k]}")
-    return CONFIRM_TEMPLATES[lang].format(phc=phc_name, items=", ".join(parts) or "-")
+            parts.append(f"{phrase(language, k)} {rep[k]}")
+    return phrase(language, "confirm", phc=phc_name, items=", ".join(parts) or "-")
 
 
 def _fallback_report(text: str, language: str, phc: dict, previous: Optional[dict]) -> dict:
@@ -225,7 +196,7 @@ def _fallback_report(text: str, language: str, phc: dict, previous: Optional[dic
     rep["english_translation"] = rep["transcript"] if language == "en" else None
     rep["confirmation"] = confirmation_text(rep, language, phc["name"])
     missing = rep.get("beds_occupied") is None or rep.get("staff_present") is None
-    rep["follow_up_question"] = FOLLOW_UP.get(language, FOLLOW_UP["en"]) if missing else None
+    rep["follow_up_question"] = phrase(language, "follow_up") if missing else None
     rep["confidence"] = 0.6
     rep.setdefault("notes", None)
     return rep
@@ -268,6 +239,11 @@ def _fallback_briefing(s: dict) -> dict:
                        f"({c['syndrome']} cluster, {c['excess_cases']} excess cases).")
     for e in s.get("escalations", [])[:2]:
         actions.append(f"Raise emergency indent: {e['qty']:g} {e['drug']} for {e['phc']}.")
+    overdue = s.get("overdue_transfers", [])
+    if overdue:
+        actions.append(f"Dispatch or cancel {len(overdue)} approved transfer(s) not dispatched for "
+                       f"{min(o['approved_days_ago'] for o in overdue)}+ days (stock is held at the donor): "
+                       + ", ".join(f"{o['from']} -> {o['to']}" for o in overdue[:3]) + ".")
     silent = s.get("silent_phcs", [])
     if silent:
         actions.append(f"Call {len(silent)} PHC(s) silent for 3+ days before acting on their numbers: "

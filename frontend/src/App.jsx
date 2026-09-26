@@ -4,7 +4,7 @@ import Icon from './components/Icon'
 import LanguageGate from './components/LanguageGate'
 import { EngineTag, Loading } from './components/ui'
 import { FONT_STEPS, UI_LANGS, useI18n } from './i18n'
-import { api, ensureToken, qs, setToken } from './lib/api'
+import { api, ensureToken, qs, signIn } from './lib/api'
 import { personaName } from './lib/labels'
 import Command from './pages/Command'
 import ModelPage from './pages/Model'
@@ -47,8 +47,7 @@ export default function App() {
   }, [])
 
   const switchPersona = async (id) => {
-    const r = await api.post('/api/auth/login', { persona_id: id })
-    setToken(r.token)
+    const r = await signIn(id)
     setFilter({ state: '', district: '' })
     await loadMeta()
     setVersion((v) => v + 1)

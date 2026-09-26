@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
@@ -37,8 +38,9 @@ def issue(persona_id: str) -> dict:
     p = next((p for p in personas() if p["id"] == persona_id), None)
     if not p:
         raise HTTPException(404, "unknown persona")
-    body = base64.urlsafe_b64encode(json.dumps(p).encode()).decode()
-    return {"token": f"{body}.{_sign(body.encode())}", "user": p}
+    claims = {**p, "exp": int(time.time()) + config.TOKEN_TTL_SECONDS}
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode()
+    return {"token": f"{body}.{_sign(body.encode())}", "user": claims}
 
 
 def current_user(authorization: Optional[str] = Header(default=None)) -> dict:
@@ -52,7 +54,10 @@ def current_user(authorization: Optional[str] = Header(default=None)) -> dict:
         raise HTTPException(401, "bad token")
     if not hmac.compare_digest(sig, _sign(body.encode())):
         raise HTTPException(401, "bad signature")
-    return json.loads(base64.urlsafe_b64decode(body.encode()))
+    claims = json.loads(base64.urlsafe_b64decode(body.encode()))
+    if claims.get("exp", 0) < time.time():        # tokens without an expiry are refused too
+        raise HTTPException(401, "session expired")
+    return claims
 
 
 def require_user(authorization: Optional[str] = Header(default=None)) -> dict:
@@ -66,6 +71,12 @@ def require_national(user: dict = Depends(require_user)) -> dict:
     if user["role"] != "national":
         raise HTTPException(403, "national command centre only")
     return user
+
+
+def can_release(user: dict, donor: dict) -> bool:
+    """Approving a transfer releases the donor's stock, so it is the donor side's decision:
+    a DHO cannot pull medicine out of a PHC in someone else's district."""
+    return user.get("role") != "phc" and in_scope(user.get("scope", {}), donor)
 
 
 def require_phc_access(user: dict, phc: dict) -> None:
