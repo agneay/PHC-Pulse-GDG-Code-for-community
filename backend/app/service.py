@@ -1,7 +1,9 @@
 """Write paths (reports, transfers) and read-model helpers shared by the API and channels."""
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
+
+import numpy as np
 
 from . import config, engine
 from .auth import in_scope
@@ -61,8 +63,12 @@ def apply_report(phc_id: int, report: dict, channel: str, language: str, engine_
     phc = get_phc(phc_id)
     if not phc:
         raise ValueError("unknown PHC")
+    # Receipts and discards first, the shelf count last: a count said in the same report already
+    # reflects them, and whatever else went missing since the opening balance was dispensed.
+    order = {"received": 0, "discarded": 1}
+    lines = sorted(report.get("stock", []), key=lambda l: order.get(l.get("kind"), 2))
     with get_conn() as conn:
-        for line in report.get("stock", []):
+        for line in lines:
             code = line.get("drug_code")
             if code not in DRUG_BY_CODE or line.get("quantity") is None:
                 continue
@@ -71,6 +77,11 @@ def apply_report(phc_id: int, report: dict, channel: str, language: str, engine_
             if line.get("kind") == "received":
                 r["received"] = (r["received"] or 0) + q
                 r["closing"] = (r["closing"] or 0) + q
+            elif line.get("kind") == "discarded":
+                # Expired / damaged: an adjustment, so it never shows up as patient demand.
+                q = min(q, r["closing"] or 0)
+                r["adjustment"] = (r["adjustment"] or 0) - q
+                r["closing"] = (r["closing"] or 0) - q
             else:
                 r["closing"] = q
                 r["dispensed"] = max(0.0, (r["opening"] or 0) + (r["received"] or 0)
@@ -102,6 +113,72 @@ def apply_report(phc_id: int, report: dict, channel: str, language: str, engine_
         rid = cursor.lastrowid
     engine.invalidate()
     return {"report_id": rid, "phc": phc["code"]}
+
+
+# ------------------------------------------------------------------ plausibility
+def check_report(phc_id: int, report: dict) -> list:
+    """Numbers that look wrong against this PHC's own recent history: a misheard "fifty" /
+    "fifteen", boxes counted as strips, a receipt nobody mentioned. Warnings ask the worker to
+    re-check before the value can move medicine between PHCs; they never block a confirmed count."""
+    r = engine.get()
+    A = r["_arrays"]
+    i = A["pidx"].get(phc_id)
+    if i is None:
+        return []
+    phc = r["phcs"][i]
+    today = config.TODAY
+    days = r["days"]
+    items = {it["drug_code"]: it for it in r["items"] if it["phc_id"] == phc_id}
+    lines = [l for l in report.get("stock", []) if l.get("drug_code") in items
+             and l.get("quantity") is not None]
+    qty = lambda code, kind: sum(float(l["quantity"]) for l in lines
+                                 if l["drug_code"] == code and l.get("kind", "remaining") == kind)
+    out = []
+
+    def warn(field, message, drug_code=None, **kw):
+        out.append({"field": field, "drug_code": drug_code, "message": message, **kw})
+
+    for code in dict.fromkeys(l["drug_code"] for l in lines):
+        d, it = DRUG_BY_CODE[code], items[code]
+        name, unit, daily = d["name"], d["unit"], max(it["daily_forecast"], 0.2)
+        j = A["didx"][code]
+        since = max((today - date.fromisoformat(days[int(A["last_stock_t"][i, j])])).days, 1)
+        last = it["stock"]
+        rec, disc = qty(code, "received"), qty(code, "discarded")
+        if any(l["drug_code"] == code and l.get("kind", "remaining") == "remaining" for l in lines):
+            q = qty(code, "remaining")
+            expected = max(last + rec - disc - daily * since, 0)
+            if q > (last + rec) * 1.5 + max(10, 3 * daily):
+                warn(code, f"{name}: {q:g} {unit} is well above the last count ({last:g}) and no "
+                           f"receipt was reported. Was new stock received?", code, reported=q, expected=round(expected))
+            elif expected >= 20 and q < 0.3 * expected:
+                warn(code, f"{name}: {q:g} {unit} is far below the expected ~{expected:.0f}. Check the unit "
+                           f"(boxes vs {unit}) or report expired/damaged stock separately.", code,
+                     reported=q, expected=round(expected))
+        if disc > last + rec:
+            warn(code, f"{name}: {disc:g} {unit} discarded, but only {last + rec:g} were on the shelf.",
+                 code, reported=disc, expected=round(last + rec))
+        if rec > max(daily * 90, 100):
+            warn(code, f"{name}: a receipt of {rec:g} {unit} is about {rec / daily:.0f} days of use. "
+                       f"Check the number and unit.", code, reported=rec, expected=round(daily * 30))
+
+    opd = report.get("opd_count")
+    if opd is not None:
+        hist = A["foot"]["opd"][i, -28:]
+        hist = hist[~np.isnan(hist)]
+        med = float(np.median(hist)) if hist.size else None
+        if med and opd > max(3 * med, med + 50):
+            warn("opd_count", f"OPD {opd} is more than 3x the usual ~{med:.0f}. If correct, it will be "
+                              f"reviewed as a possible outbreak signal.", reported=opd, expected=round(med))
+    if report.get("beds_occupied") is not None and report["beds_occupied"] > phc["beds_total"]:
+        warn("beds_occupied", f"{report['beds_occupied']} beds occupied, but this PHC has "
+                              f"{phc['beds_total']} beds.", reported=report["beds_occupied"],
+             expected=phc["beds_total"])
+    if report.get("staff_present") is not None and report["staff_present"] > phc["staff_sanctioned"] * 1.5:
+        warn("staff_present", f"{report['staff_present']} staff present, but {phc['staff_sanctioned']} "
+                              f"posts are sanctioned.", reported=report["staff_present"],
+             expected=phc["staff_sanctioned"])
+    return out
 
 
 # ------------------------------------------------------------------ transfers
@@ -208,6 +285,7 @@ def kpis(sc: dict) -> dict:
     return {
         "phcs": len(phcs),
         "phcs_reporting_today": sum(p["reported_today"] for p in phcs),
+        "stale_phcs": sum(p["stale"] for p in phcs),
         "stocked_out_items": sum(i["status"] == "stocked_out" for i in items),
         "predicted_stockouts": sum(i["status"] in ("critical", "high", "watch") for i in items),
         "critical_items": sum(i["status"] == "critical" for i in items),
@@ -248,7 +326,8 @@ def snapshot(result: dict, scope: dict) -> dict:
                          "days_to_stockout": i["days_to_stockout"], "status": i["status"],
                          "next_supply_in_days": i["next_supply_in"],
                          "outbreak_adjusted": i["surge_reason"]} for i in risks[:25]],
-        "clusters": [{"district": DISTRICT_NAME[c["district_code"]], "syndrome": c["syndrome"],
+        "clusters": [{"district": " / ".join(DISTRICT_NAME[d] for d in c["district_codes"]),
+                      "syndrome": c["syndrome"],
                       "phcs": c["phc_codes"], "excess_cases": c["excess_cases"],
                       "max_ratio": c["max_ratio"], "days": c["max_consecutive_days"]}
                      for c in sc["clusters"]],
@@ -264,6 +343,8 @@ def snapshot(result: dict, scope: dict) -> dict:
         "escalations": [{"phc": e["phc"]["code"], "drug": DRUG_BY_CODE[e["drug_code"]]["name"],
                          "qty": e["qty"], "needed_in_days": e["needed_in_days"]}
                         for e in sc["escalations"][:10]],
+        "silent_phcs": [{"phc": p["code"] + " " + p["name"], "days_since_report": p["days_since_report"]}
+                        for p in sorted(sc["phcs"], key=lambda p: -p["days_since_report"]) if p["stale"]][:10],
         "weakest_phcs": [{"phc": p["code"] + " " + p["name"], "score": p["score"],
                           "critical_items": p["critical_items"], "anomalies": p["anomalies"],
                           "reported_today": p["reported_today"]}

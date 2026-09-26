@@ -29,11 +29,29 @@ FIELD_WORDS = {
 }
 
 
+# Stock removed from the shelf without being dispensed (expired, damaged). Recorded as an
+# adjustment so it does not count as patient demand in the forecast.
+_DISCARD_WORDS = (r"\b(?:expired?|expiry|exp|damaged?|dmg|discard(?:ed)?|wasted?|broken|"
+                  r"kharab|nasht|barbaad)\b|खराब|नष्ट|एक्सपायर|காலாவதி|சேதம்|ಹಾಳಾದ|ಅವಧಿ ಮೀರಿದ|ନଷ୍ଟ")
+DISCARD = re.compile(_DISCARD_WORDS)
+TRAILING_DISCARD = re.compile(r"^\s*(?:[a-z]+\s+)?(?:" + _DISCARD_WORDS + ")")  # "5 [strips] expired"
+RECEIVED = re.compile(r"receiv|\bmila|मिला|मिले")
+
+
+def _drug_keys(d):
+    return [d["code"].lower()] + d["aliases"] + [n.split(" (")[0] for n in d["names"].values()]
+
+
+DRUG_START = re.compile(r"\s*(?:" + "|".join(
+    (r"\b" + re.escape(k) + r"\b") if k.isascii() else re.escape(k)
+    for k in sorted({k for d in DRUGS for k in _drug_keys(d)}, key=len, reverse=True)) + ")")
+
+
 def _find(key: str, text: str):
-    """Word-boundary match for Latin keys; plain substring for Indic scripts (where combining
-    marks make \\b unreliable)."""
+    """Whole-word match for Latin keys (plural allowed: "bed" also finds "beds", but "dia" does not
+    find "diabetes"); plain substring for Indic scripts, where combining marks make \\b unreliable."""
     if key.isascii():
-        return re.search(r"\b" + re.escape(key), text)
+        return re.search(r"\b" + re.escape(key) + r"(?:s|es)?\b", text)
     return re.search(re.escape(key), text)
 
 
@@ -68,28 +86,43 @@ def parse(text: str) -> dict:
                 best = (dist, k, v)
         if best:
             used.add(best[1])
-            return best[2]
+            return best[1]
         return None
 
-    out = {"stock": [], "received": []}
-    # Received mentions: "received 200 paracetamol"
+    def kind_of(m, k):
+        """'received' / 'discarded' from words just before the drug name ("received 200 PCM",
+        "expired ORS 5", SMS "DMG ORS 5") or right after the item ("ORS 5 expired", "5 ORS
+        damaged"). A discard word between two items belongs to the one that follows it, so a
+        trailing one only counts when no other drug comes straight after it."""
+        c = clause(m.start())
+        start = max(m.start() - 25, bounds[c - 1] + 1 if c else 0)
+        prev_end = max((e for j, (_, e, _) in enumerate(tokens) if e <= m.start() and j != k), default=-1)
+        before = t[max(start, prev_end):m.start()]
+        rest = t[max(m.end(), tokens[k][1]):]
+        tail = TRAILING_DISCARD.match(rest)
+        if tail and not DRUG_START.match(rest[tail.end():]):
+            return "discarded"
+        if DISCARD.search(before):
+            return "discarded"
+        return "received" if RECEIVED.search(before) else "stock"
+
+    out = {"stock": [], "received": [], "discarded": []}
     for drug in DRUGS:
-        keys = [drug["code"].lower()] + drug["aliases"] + [n.split(" (")[0] for n in drug["names"].values()]
-        for key in sorted(keys, key=len, reverse=True):
-            m = re.search(r"\b" + re.escape(key) + r"\b", t) if key.isascii() else _find(key, t)
-            if m:
-                window = t[max(0, m.start() - 20): m.start()]
-                val = nearest_number(m.start(), m.end())
-                if val is not None:
-                    target = "received" if "receiv" in window or "mila" in window else "stock"
-                    out[target].append({"drug_code": drug["code"], "quantity": val})
+        for key in sorted(_drug_keys(drug), key=len, reverse=True):
+            pat = r"\b" + re.escape(key) + r"\b" if key.isascii() else re.escape(key)
+            found = list(re.finditer(pat, t))
+            for m in found:           # every mention: "PCM 120 ... expired PCM 10"
+                k = nearest_number(m.start(), m.end())
+                if k is not None:
+                    out[kind_of(m, k)].append({"drug_code": drug["code"], "quantity": tokens[k][2]})
+            if found:
                 break
     for field, words in FIELD_WORDS.items():
         for w in words:
             m = _find(w, t)
             if m:
-                val = nearest_number(m.start(), m.end())
-                if val is not None:
-                    out[field] = int(val)
+                k = nearest_number(m.start(), m.end())
+                if k is not None:
+                    out[field] = int(tokens[k][2])
                 break
     return out

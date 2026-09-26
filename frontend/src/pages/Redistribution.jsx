@@ -24,6 +24,13 @@ export default function Redistribution() {
   if (loading && !data) return <Loading label="Solving the redistribution MILP…" />
 
   const approve = async (s) => {
+    const items = s.lines.map((l) => `${fmt(l.qty)} ${drug[l.drug_code].unit} ${drug[l.drug_code].name}`).join(', ')
+    if (!window.confirm(`Approve transfer ${s.from.code} → ${s.to.code}?
+
+${items}
+${fmt(s.distance_km)} km · ${inr(s.cost_inr)}
+
+This reserves the stock at ${s.from.code}.`)) return
     setBusy(s.id)
     try {
       await api.post(`/api/redistribution/${s.id}/approve?cross_state=${cross}`)
@@ -67,6 +74,9 @@ export default function Redistribution() {
         </div>
       </div>
 
+      {st.failed && <div className="err" role="alert"><b>The optimiser could not produce a plan</b> ({st.solver}). Shortages below are real, but no transfers were computed: this is not "nothing to move". Raise emergency indents or retry.</div>}
+      {!st.failed && st.time_limited && <div className="note">The optimiser hit its time limit, so this plan is feasible but may not be the cheapest.</div>}
+
       <div className="grid g-kpi">
         <Kpi icon="truck" label="Recommended shipments" value={data.shipments.length} sub={`${st.lanes ?? 0} candidate lanes evaluated`} />
         <Kpi icon="pill" label="Units rebalanced" value={fmt(st.units_moved)} sub={`${st.coverage != null ? Math.round(st.coverage * 100) : 0}% of forecast shortfall covered from surplus`} tone="good" />
@@ -108,7 +118,7 @@ export default function Redistribution() {
                 )}
               </div>
             ))}
-            {!data.shipments.length && <div className="empty">No transfers needed in this scope. Surplus and shortages are balanced.</div>}
+            {!data.shipments.length && !st.failed && <div className="empty">No transfers needed in this scope. Surplus and shortages are balanced.</div>}
           </div>
         </Card>
         <Card title="Lanes" icon="map" hint="orange = recommended · blue = approved / in transit" bodyClass="">
@@ -142,7 +152,7 @@ export default function Redistribution() {
                     <td>
                       {t.status === 'approved' && <button className="btn sm orange" disabled={busy === `t${t.id}`} onClick={() => advance(t, 'in_transit')}>Dispatch</button>}
                       {t.status === 'in_transit' && <button className="btn sm primary" disabled={busy === `t${t.id}`} onClick={() => advance(t, 'delivered')}>Mark delivered</button>}
-                      {t.status === 'approved' && <button className="btn sm ghost" onClick={() => advance(t, 'cancelled')}>Cancel</button>}
+                      {t.status === 'approved' && canApprove && <button className="btn sm ghost" onClick={() => advance(t, 'cancelled')}>Cancel</button>}
                       {t.status === 'delivered' && <span className="pill delivered"><Icon name="check" size={12} />Resolved</span>}
                     </td>
                   </tr>

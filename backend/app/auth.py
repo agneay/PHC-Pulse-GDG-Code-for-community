@@ -8,7 +8,7 @@ import hmac
 import json
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from . import config
 from .reference import DISTRICTS, STATES
@@ -53,6 +53,24 @@ def current_user(authorization: Optional[str] = Header(default=None)) -> dict:
     if not hmac.compare_digest(sig, _sign(body.encode())):
         raise HTTPException(401, "bad signature")
     return json.loads(base64.urlsafe_b64decode(body.encode()))
+
+
+def require_user(authorization: Optional[str] = Header(default=None)) -> dict:
+    """Write endpoints: an explicit, signed token is mandatory (no anonymous national fallback)."""
+    if not authorization:
+        raise HTTPException(401, "sign in required")
+    return current_user(authorization)
+
+
+def require_national(user: dict = Depends(require_user)) -> dict:
+    if user["role"] != "national":
+        raise HTTPException(403, "national command centre only")
+    return user
+
+
+def require_phc_access(user: dict, phc: dict) -> None:
+    if not in_scope(user.get("scope", {}), phc):
+        raise HTTPException(403, f"{phc['code']} is outside your jurisdiction")
 
 
 def effective_scope(user: dict, state: Optional[str] = None, district: Optional[str] = None) -> dict:

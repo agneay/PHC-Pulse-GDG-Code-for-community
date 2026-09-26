@@ -15,17 +15,25 @@ GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Token signing for the demo role-based access (row-level scoping by state/district/PHC).
-AUTH_SECRET = os.getenv("PHC_AUTH_SECRET", "phc-pulse-demo-secret-change-me")
+AUTH_SECRET = os.getenv("PHC_AUTH_SECRET") or "phc-pulse-demo-secret-change-me"
+if AUTH_SECRET in ("phc-pulse-demo-secret-change-me", "change-me") and os.getenv("K_SERVICE"):
+    # K_SERVICE is set by Cloud Run: never serve publicly with a secret that is in the repo.
+    raise RuntimeError("PHC_AUTH_SECRET must be set to a strong random value on Cloud Run")
 
 # Seed: history length and the simulated "today". Defaults to the real current date.
 HISTORY_DAYS = int(os.getenv("PHC_HISTORY_DAYS", "180"))
 SEED = int(os.getenv("PHC_SEED", "42"))
 _today_env = os.getenv("PHC_TODAY")
 TODAY = date.fromisoformat(_today_env) if _today_env else date.today()
+# The synthetic history is anchored to TODAY; re-seed when a stored database was generated for a
+# different day (otherwise nobody has "reported today" and the demo scenario drifts away).
+RESEED_IF_STALE = os.getenv("PHC_RESEED_IF_STALE", "1").lower() in ("1", "true", "yes")
 
 # Planning parameters (the business rules of the early-warning + redistribution engine).
 FORECAST_HORIZON = 28          # days forecast per PHC x drug
 WARNING_WINDOW = 21            # flag a stock-out predicted within this many days
+STALE_DAYS = 3                 # a PHC silent this long is shown as unverified and kept out of
+                               # outbreak detection and redistribution until it reports again
 SUPPLY_CYCLE_DAYS = 30        # monthly indent from the district drug warehouse
 SAFETY_DAYS = 7                # buffer stock both donor and recipient must keep after a transfer
 SAFETY_FACTOR = 1.2            # donors plan against 120% of their own forecast demand

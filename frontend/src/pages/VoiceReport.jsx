@@ -26,13 +26,14 @@ const FIELDS = [
   ['respiratory_cases', 'Respiratory cases'], ['beds_occupied', 'Beds occupied'], ['staff_present', 'Staff present'],
 ]
 const MAX_SECONDS = 60
+const FLAG_STYLE = { borderColor: 'var(--red, #c62828)', background: '#fff4f4' }
 
 export default function VoiceReport() {
   const { meta, refresh, notify } = useApp()
   const [sp] = useSearchParams()
   const phcs = useAsync(() => api.get('/api/overview'), [])
   const userPhc = meta.user.scope?.phc_id
-  const [phcId, setPhcId] = useState(Number(sp.get('phc')) || userPhc || 22)
+  const [phcId, setPhcId] = useState(userPhc || Number(sp.get('phc')) || null)   // never guess the facility
   const [lang, setLang] = useState(null)
   const [mode, setMode] = useState('voice')
   const [text, setText] = useState('')
@@ -48,9 +49,9 @@ export default function VoiceReport() {
   const followUp = useRef(false)
 
   const phc = phcs.data?.phcs.find((p) => p.id === phcId)
-  useEffect(() => {   // requested PHC outside the user's jurisdiction -> first PHC they can see
-    if (phcs.data && !phc && phcs.data.phcs.length) setPhcId(phcs.data.phcs[0].id)
-  }, [phcs.data, phc])
+  useEffect(() => {   // requested PHC outside the user's jurisdiction -> make them pick one
+    if (phcs.data && phcId && !phc) setPhcId(null)
+  }, [phcs.data, phc, phcId])
   const language = lang || phc?.language || 'en'
   const bcp = meta.languages[language]?.bcp47 || 'en-IN'
   const gem = meta.gemini.enabled
@@ -130,18 +131,25 @@ export default function VoiceReport() {
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
-  const edit = (k, v) => setOut((o) => ({ ...o, report: { ...o.report, [k]: v === '' ? null : Number(v) } }))
+  // Editing a value invalidates the plausibility warnings; the server re-checks on submit.
+  const edit = (k, v) => setOut((o) => ({ ...o, warnings: [], report: { ...o.report, [k]: v === '' ? null : Number(v) } }))
   const editStock = (i, v) => setOut((o) => {
-    const stock = [...o.report.stock]; stock[i] = { ...stock[i], quantity: Number(v) }
-    return { ...o, report: { ...o.report, stock } }
+    const stock = [...o.report.stock]; stock[i] = { ...stock[i], quantity: v === '' ? null : Number(v) }
+    return { ...o, warnings: [], report: { ...o.report, stock } }
   })
+  const warnings = out?.warnings || []
+  const flagged = new Set(warnings.map((w) => w.field))
 
   const submit = async () => {
-    setBusy(true)
+    setBusy(true); setErr(null)
     try {
-      const r = await api.post('/api/reports/submit', { phc_id: phcId, language, channel: mode === 'voice' ? 'voice' : 'text', engine: out.engine, report: out.report })
+      // Submitting while warnings are on screen means the worker has re-checked those numbers.
+      const r = await api.post('/api/reports/submit', { phc_id: phcId, language, channel: mode === 'voice' ? 'voice' : 'text', engine: out.engine, report: out.report, confirmed: warnings.length > 0 })
       setSaved(r); refresh(); notify(`Report saved for ${r.phc}. Forecasts recomputed.`)
-    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+    } catch (e) {
+      if (e.status === 409 && e.detail?.warnings) setOut((o) => ({ ...o, warnings: e.detail.warnings }))
+      else setErr(e.message)
+    } finally { setBusy(false) }
   }
 
   const drugName = (c) => meta.drugs.find((d) => d.code === c)
@@ -161,8 +169,9 @@ export default function VoiceReport() {
         <Card title="1 · Who is reporting" icon="users">
           <div className="stack">
             <div className="row">
-              <select className="select" style={{ flex: 1 }} value={phcId} disabled={!!userPhc}
+              <select className="select" style={{ flex: 1 }} value={phcId ?? ''} disabled={!!userPhc}
                 onChange={(e) => { setPhcId(Number(e.target.value)); setLang(null); reset() }} aria-label="PHC">
+                {!phcId && <option value="">Select the reporting PHC…</option>}
                 {(phcs.data?.phcs || []).map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name} ({p.district_code})</option>)}
               </select>
             </div>
@@ -191,7 +200,7 @@ export default function VoiceReport() {
           <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>Type</button></div>}>
           {mode === 'voice' ? (
             <div style={{ textAlign: 'center' }}>
-              <button className={`mic ${rec ? 'rec' : ''}`} onClick={() => (rec ? stop() : start(false))} disabled={busy}
+              <button className={`mic ${rec ? 'rec' : ''}`} onClick={() => (rec ? stop() : start(false))} disabled={busy || !phcId}
                 aria-label={rec ? 'Stop recording' : 'Start recording'}>
                 <Icon name={rec ? 'stop' : 'mic'} size={48} stroke={1.8} />
               </button>
@@ -205,7 +214,7 @@ export default function VoiceReport() {
               <textarea className="textarea" rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type or paste the worker's report in any language…" />
               <div className="row">
                 <button className="btn" onClick={() => setText(SAMPLES[language] || SAMPLES.en)}>Use sample</button>
-                <button className="btn primary" onClick={parseText} disabled={busy || !text.trim()}>{busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}Understand report</button>
+                <button className="btn primary" onClick={parseText} disabled={busy || !text.trim() || !phcId}>{busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}Understand report</button>
               </div>
             </div>
           )}
@@ -233,19 +242,25 @@ export default function VoiceReport() {
             </div>
             <div className="parsed-grid">
               {rep.stock.map((s, i) => (
-                <label key={s.drug_code + s.kind} className="f">
-                  <div className="l">{drugName(s.drug_code)?.name} {s.kind === 'received' ? '(received)' : '(remaining)'}</div>
-                  <input type="number" value={s.quantity} onChange={(e) => editStock(i, e.target.value)} />
+                <label key={s.drug_code + s.kind} className="f" style={flagged.has(s.drug_code) ? FLAG_STYLE : null}>
+                  <div className="l">{drugName(s.drug_code)?.name} {{ received: '(received)', discarded: '(expired / damaged, thrown away)' }[s.kind] || '(remaining on shelf)'}</div>
+                  <input type="number" value={s.quantity ?? ''} placeholder="not reported" onChange={(e) => editStock(i, e.target.value)} />
                   <div className="l">{drugName(s.drug_code)?.unit}</div>
                 </label>
               ))}
               {FIELDS.map(([k, l]) => (
-                <label key={k} className="f" style={rep[k] == null ? { borderStyle: 'dashed' } : null}>
+                <label key={k} className="f" style={flagged.has(k) ? FLAG_STYLE : rep[k] == null ? { borderStyle: 'dashed' } : null}>
                   <div className="l">{l}</div>
                   <input type="number" value={rep[k] ?? ''} placeholder="–" onChange={(e) => edit(k, e.target.value)} />
                 </label>
               ))}
             </div>
+            {warnings.length > 0 && !saved && (
+              <div className="err" role="alert">
+                <b>Please re-check these numbers before submitting:</b>
+                <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w.message}</li>)}</ul>
+              </div>
+            )}
             {rep.notes && <div className="note">Notes: {rep.notes}</div>}
             {rep.follow_up_question && !saved && (
               <div className="note" style={{ borderColor: '#ffc68a', background: 'var(--orange-100)' }}>
@@ -258,7 +273,7 @@ export default function VoiceReport() {
             )}
             {!saved ? (
               <div className="row">
-                <button className="btn primary" onClick={submit} disabled={busy}><Icon name="check" size={15} />Confirm & submit</button>
+                <button className="btn primary" onClick={submit} disabled={busy}><Icon name="check" size={15} />{warnings.length ? 'Numbers re-checked, submit' : 'Confirm & submit'}</button>
                 <button className="btn" onClick={reset}>Discard</button>
                 {mode === 'text' && <button className="btn ghost" onClick={() => { followUp.current = true; setText('') }}>Add follow-up answer</button>}
                 {rep.confidence != null && <span className="muted small">confidence {Math.round(rep.confidence * 100)}%</span>}

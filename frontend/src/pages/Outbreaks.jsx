@@ -9,7 +9,7 @@ import { fmt, SYNDROME_LABEL } from '../lib/format'
 import { speak } from '../lib/wav'
 
 export default function Outbreaks() {
-  const { scopeQs, version, meta } = useApp()
+  const { scopeQs, version, meta, notify } = useApp()
   const { data, error, loading } = useAsync(() => api.get(`/api/alerts${scopeQs}`), [scopeQs, version])
   const ov = useAsync(() => api.get(`/api/overview${scopeQs}`), [scopeQs, version])
   const [drafts, setDrafts] = useState({})
@@ -24,7 +24,7 @@ export default function Outbreaks() {
     try {
       const r = await api.post(`/api/clusters/${c.id}/alert`, {})
       setDrafts((d) => ({ ...d, [c.id]: r }))
-    } finally { setBusy(null) }
+    } catch (e) { notify(e.message) } finally { setBusy(null) }
   }
   const atRisk = (c) => data.stock_warnings.filter((w) => c.phc_ids.includes(w.phc_id) && w.surge_reason)
 
@@ -45,7 +45,7 @@ export default function Outbreaks() {
             const d = drafts[c.id]
             const risk = atRisk(c)
             return (
-              <Card key={c.id} icon="bug" title={`${SYNDROME_LABEL[c.syndrome]} cluster · ${dname[c.district_code]}`}
+              <Card key={c.id} icon="bug" title={`${SYNDROME_LABEL[c.syndrome]} cluster · ${(c.district_codes || [c.district_code]).map((d) => dname[d]).join(' / ')}`}
                 right={<span className={`pill ${c.severity}-sev`}>{c.severity} severity</span>}>
                 <div className="stack">
                   <div className="row small">

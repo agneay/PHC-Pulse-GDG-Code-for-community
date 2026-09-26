@@ -219,7 +219,7 @@ def redistribution(cross_state: bool = False, scope: dict = Depends(scope_dep)):
 
 
 @app.post("/api/redistribution/{rec_id}/approve")
-def approve(rec_id: str, cross_state: bool = False, user: dict = Depends(auth.current_user)):
+def approve(rec_id: str, cross_state: bool = False, user: dict = Depends(auth.require_user)):
     if user["role"] == "phc":
         raise HTTPException(403, "PHC staff cannot approve transfers")
     r = result(cross_state)
@@ -237,7 +237,22 @@ class StatusIn(BaseModel):
 
 
 @app.post("/api/transfers/{tid}/status")
-def transfer_status(tid: int, body: StatusIn, user: dict = Depends(auth.current_user)):
+def transfer_status(tid: int, body: StatusIn, user: dict = Depends(auth.require_user)):
+    t = next((t for t in service.list_transfers("t.id=?", (tid,))), None)
+    if not t:
+        raise HTTPException(404, "unknown transfer")
+    donor = {"id": t["from_phc"], "district_code": t["from_district"], "state_code": t["from_state"]}
+    recipient = {"id": t["to_phc"], "district_code": t["to_district"], "state_code": t["to_state"]}
+    sc = user.get("scope", {})
+    # The donor side dispatches, the recipient side confirms receipt; cancelling is an officer decision.
+    allowed = {"in_transit": auth.in_scope(sc, donor),
+               "delivered": auth.in_scope(sc, recipient),
+               "cancelled": user["role"] != "phc" and (auth.in_scope(sc, donor)
+                                                       or auth.in_scope(sc, recipient))}
+    if body.status not in allowed:
+        raise HTTPException(400, f"unknown status {body.status}")
+    if not allowed[body.status]:
+        raise HTTPException(403, f"You cannot mark {t['from_code']} -> {t['to_code']} as {body.status}")
     try:
         return service.set_transfer_status(tid, body.status, user)
     except ValueError as e:
@@ -255,10 +270,11 @@ def transfers(scope: dict = Depends(scope_dep)):
 @app.post("/api/reports/voice")
 async def report_voice(audio: UploadFile = File(...), phc_id: int = Form(...),
                        language: str = Form("en"), previous: Optional[str] = Form(None),
-                       text: Optional[str] = Form(None)):
+                       text: Optional[str] = Form(None), user: dict = Depends(auth.require_user)):
     phc = service.get_phc(phc_id)
     if not phc:
         raise HTTPException(404, "unknown PHC")
+    auth.require_phc_access(user, phc)
     data = await audio.read()
     if len(data) > 8_000_000:
         raise HTTPException(413, "audio too long - keep it under 60 seconds")
@@ -270,7 +286,7 @@ async def report_voice(audio: UploadFile = File(...), phc_id: int = Form(...),
             previous=json.loads(previous) if previous else None)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
-    return out
+    return {**out, "warnings": service.check_report(phc_id, out["report"])}
 
 
 class TextReportIn(BaseModel):
@@ -281,17 +297,19 @@ class TextReportIn(BaseModel):
 
 
 @app.post("/api/reports/parse")
-def report_parse(body: TextReportIn):
+def report_parse(body: TextReportIn, user: dict = Depends(auth.require_user)):
     phc = service.get_phc(body.phc_id)
     if not phc:
         raise HTTPException(404, "unknown PHC")
+    auth.require_phc_access(user, phc)
     try:
-        return gemini.parse_report(
+        out = gemini.parse_report(
             phc=phc, district=service.DISTRICT_NAME[phc["district_code"]],
             state=service.STATE_NAME[phc["state_code"]], language=body.language, text=body.text,
             previous=body.previous)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+    return {**out, "warnings": service.check_report(body.phc_id, out["report"])}
 
 
 class SubmitIn(BaseModel):
@@ -300,12 +318,22 @@ class SubmitIn(BaseModel):
     channel: str = "voice"
     engine: str = "unknown"
     report: dict
+    confirmed: bool = False     # the worker re-checked numbers flagged as implausible
 
 
 @app.post("/api/reports/submit")
-def report_submit(body: SubmitIn):
+def report_submit(body: SubmitIn, user: dict = Depends(auth.require_user)):
+    phc = service.get_phc(body.phc_id)
+    if not phc:
+        raise HTTPException(404, "unknown PHC")
+    auth.require_phc_access(user, phc)
+    warnings = service.check_report(body.phc_id, body.report)
+    if warnings and not body.confirmed:
+        raise HTTPException(409, {"message": "Some numbers look unusual. Re-check them, then confirm.",
+                                  "warnings": warnings})
     try:
-        out = service.apply_report(body.phc_id, body.report, body.channel, body.language, body.engine)
+        out = service.apply_report(body.phc_id, {**body.report, "warnings": warnings}, body.channel,
+                                   body.language, body.engine, reporter=user["name"])
     except ValueError as e:
         raise HTTPException(400, str(e))
     r = result()
@@ -381,14 +409,15 @@ class AlertIn(BaseModel):
 
 
 @app.post("/api/clusters/{cluster_id}/alert")
-def cluster_alert(cluster_id: str, body: AlertIn):
+def cluster_alert(cluster_id: str, body: AlertIn, user: dict = Depends(auth.require_user)):
     r = result()
+    sc = user.get("scope", {})
     c = next((c for c in r["clusters"] if c["id"] == cluster_id), None)
-    if not c:
-        raise HTTPException(404, "cluster not found")
+    if not c or not any(auth.in_scope(sc, p) for p in r["phcs"] if p["id"] in c["phc_ids"]):
+        raise HTTPException(404, "cluster not found in your scope")
     lang = body.language or next(s["language"] for s in STATES if s["code"] == c["state_code"])
     pmap = {p["id"]: p for p in r["phcs"]}
-    payload = {**c, "district_name": service.DISTRICT_NAME[c["district_code"]],
+    payload = {**c, "district_name": " / ".join(service.DISTRICT_NAME[d] for d in c["district_codes"]),
                "state_name": service.STATE_NAME[c["state_code"]],
                "phcs": [{"code": pmap[i]["code"], "name": pmap[i]["name"]} for i in c["phc_ids"]],
                "anomalies": [a for a in r["anomalies"] if a["phc_id"] in c["phc_ids"]]}
@@ -418,7 +447,7 @@ def hmis_export(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
     """Monthly facility report in an HMIS-style flat layout (one row per facility x item)."""
     month = month or config.TODAY.strftime("%Y-%m")
     with get_conn() as conn:
-        stock = rows(conn, """SELECT p.nin, p.code, p.name, p.district_code, p.state_code, s.drug_code,
+        stock = rows(conn, """SELECT p.id, p.nin, p.code, p.name, p.district_code, p.state_code, s.drug_code,
               SUM(COALESCE(s.received,0)) AS received, SUM(COALESCE(s.dispensed,0)) AS dispensed,
               SUM(CASE WHEN s.closing<=0 THEN 1 ELSE 0 END) AS stockout_days,
               (SELECT closing FROM stock_daily s2 WHERE s2.phc_id=s.phc_id AND s2.drug_code=s.drug_code
@@ -435,8 +464,7 @@ def hmis_export(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
                 "opd_total", "fever", "diarrhoea", "ari", "days_reported", "item_code", "item_name",
                 "received", "consumed", "closing_balance", "stockout_days"])
     for s in stock:
-        if not auth.in_scope(scope, {"id": -1, "district_code": s["district_code"],
-                                     "state_code": s["state_code"]}) and not scope.get("phc_id"):
+        if not auth.in_scope(scope, s):
             continue
         f = foot.get(s["code"], {})
         w.writerow([month, s["state_code"], s["district_code"], s["nin"], s["code"], s["name"],
@@ -449,7 +477,7 @@ def hmis_export(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
 
 
 @app.post("/api/admin/reset")
-def reset(user: dict = Depends(auth.current_user)):
+def reset(user: dict = Depends(auth.require_national)):
     """Re-seed the demo data (used between demo runs)."""
     seed.seed_database(force=True)
     channels._submitted.clear()
@@ -459,13 +487,21 @@ def reset(user: dict = Depends(auth.current_user)):
 
 
 # ---------------------------------------------------------------- SPA
+def static_file(root, path: str):
+    """The file under `root` that `path` names, or None. Resolved and confined to `root`, so
+    "..", percent-encoded slashes and absolute paths (e.g. "//proc/self/environ") never escape."""
+    root = root.resolve()
+    f = (root / path.lstrip("/\\")).resolve()
+    return f if path and f.is_relative_to(root) and f.is_file() else None
+
+
 if config.STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=config.STATIC_DIR / "assets"), name="assets")
 
     @app.get("/{path:path}")
     def spa(path: str):
-        f = config.STATIC_DIR / path
-        if path and f.is_file():
+        f = static_file(config.STATIC_DIR, path)
+        if f:
             return FileResponse(f)
         return FileResponse(config.STATIC_DIR / "index.html")
 else:

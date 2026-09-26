@@ -98,7 +98,10 @@ def compute(allow_cross_state: bool = False) -> dict:
     wday = np.array([d.weekday() for d in days])
     foot_has = ~np.isnan(foot["opd"])
     last_foot_t = np.where(foot_has.any(axis=1), T - 1 - np.argmax(foot_has[:, ::-1], axis=1), 0)
-    anom = anomaly.detect(foot, wday, last_foot_t, phcs, days)
+    # Silent PHCs: their last numbers are too old to raise outbreak signals or move medicine on.
+    days_silent = (T - 1) - last_foot_t
+    stale = days_silent >= config.STALE_DAYS
+    anom = anomaly.detect(foot, wday, last_foot_t, phcs, days, active=~stale)
     surge = np.ones(S)
     surge_reason = [None] * S
     for a in anom["anomalies"]:
@@ -161,6 +164,8 @@ def compute(allow_cross_state: bool = False) -> dict:
     deficits, donors = [], []
     for s in range(S):
         i, j = divmod(s, D)
+        if stale[i]:          # verify by phone first; see "stale" on the PHC
+            continue
         if status[s] in ("critical", "high", "watch", "stocked_out"):
             horizon = int(min(supply_in[s] + elapsed[s] + config.SAFETY_DAYS, H))
             need = float(np.ceil(fc_adj[s, :horizon].sum() - max(avail[s], 0)))
@@ -201,6 +206,7 @@ def compute(allow_cross_state: bool = False) -> dict:
                                   "lat", "lon", "beds_total", "staff_sanctioned", "is_24x7",
                                   "language", "nin")},
             "last_report": days[lt].isoformat(), "reported_today": bool(reported_today),
+            "days_since_report": int(days_silent[i]), "stale": bool(stale[i]),
             "opd_last": None if np.isnan(foot["opd"][i, lt]) else int(foot["opd"][i, lt]),
             "beds_occupied": None if np.isnan(beds) else int(beds),
             "bed_occupancy": occ, "staff_present": None if np.isnan(staff) else int(staff),
@@ -222,6 +228,7 @@ def compute(allow_cross_state: bool = False) -> dict:
             "next_supply_in": int(supply_in[s]), "p_stockout": round(float(p_out[s]), 3),
             "status": status[s], "surplus_units": float(np.floor(surplus_units[s])),
             "surge": round(float(surge[s]), 2), "surge_reason": surge_reason[s],
+            "stale": bool(stale[i]),
         })
 
     # ---- backtest (model credibility panel) -------------------------------------------------

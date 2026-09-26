@@ -11,6 +11,7 @@ Simulates 180 days of daily PHC operations for 120 PHCs across 8 districts in 4 
   * Three injected outbreak signals for the anomaly detector.
   * The deck's walkthrough scenario: PHC-14 holds surplus paracetamol, PHC-22 runs out in ~9 days.
 """
+import logging
 import math
 from datetime import timedelta
 
@@ -23,6 +24,7 @@ from .reference import DISTRICTS, DRUGS, STATE_DRUG_FACTOR, STATES
 WEEKDAY_FACTOR = np.array([1.25, 1.10, 1.00, 1.00, 0.95, 0.90, 0.45])  # Mon..Sun
 SYNDROME_SHARE = {"fever": 0.22, "diarrhoea": 0.09, "respiratory": 0.20}
 OTHER_SHARE = 1.0 - sum(SYNDROME_SHARE.values())
+log = logging.getLogger("phc.seed")
 
 
 def _bump(doy: np.ndarray, center: int, width: float) -> np.ndarray:
@@ -186,7 +188,11 @@ def seed_database(force: bool = False) -> None:
     with get_conn() as conn:
         init_schema(conn)
         if not force and conn.execute("SELECT COUNT(*) FROM phcs").fetchone()[0] > 0:
-            return
+            seeded_to = conn.execute(
+                "SELECT MAX(day) FROM footfall_daily WHERE source='hmis'").fetchone()[0]
+            if not config.RESEED_IF_STALE or seeded_to == config.TODAY.isoformat():
+                return
+            log.info("synthetic history ends %s but today is %s: re-seeding", seeded_to, config.TODAY)
         for tbl in ("states", "districts", "phcs", "drugs", "stock_daily", "footfall_daily",
                     "workers", "reports", "transfers"):
             conn.execute(f"DELETE FROM {tbl}")

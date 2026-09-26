@@ -20,6 +20,11 @@ FAKE = {
 }
 
 
+def _auth(c):
+    tok = c.post("/api/auth/login", json={"persona_id": "phc-22"}).json()["token"]
+    return {"Authorization": f"Bearer {tok}"}
+
+
 def test_voice_upload_uses_gemini(monkeypatch):
     seen = {}
 
@@ -31,7 +36,7 @@ def test_voice_upload_uses_gemini(monkeypatch):
     monkeypatch.setattr(gemini, "_gen_json", fake_gen)
     with TestClient(app) as c:
         wav = b"RIFF" + b"\x00" * 40
-        r = c.post("/api/reports/voice", data={"phc_id": 22, "language": "ta"},
+        r = c.post("/api/reports/voice", headers=_auth(c), data={"phc_id": 22, "language": "ta"},
                    files={"audio": ("r.wav", wav, "audio/wav")})
     assert r.status_code == 200, r.text
     out = r.json()
@@ -44,6 +49,6 @@ def test_voice_upload_uses_gemini(monkeypatch):
 def test_voice_without_gemini_is_explicit(monkeypatch):
     monkeypatch.setattr(gemini, "client", lambda: None)
     with TestClient(app) as c:
-        r = c.post("/api/reports/voice", data={"phc_id": 22, "language": "hi"},
+        r = c.post("/api/reports/voice", headers=_auth(c), data={"phc_id": 22, "language": "hi"},
                    files={"audio": ("r.wav", b"RIFF", "audio/wav")})
     assert r.status_code == 503 and "Gemini" in r.json()["detail"]

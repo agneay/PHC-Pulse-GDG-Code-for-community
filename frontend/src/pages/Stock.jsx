@@ -88,7 +88,8 @@ export default function Stock() {
                 <td className="r num">{i.next_supply_in}d</td>
                 <td className="r num">{Math.round(i.p_stockout * 100)}%</td>
                 <td>{i.surge_reason && <span className="pill red" title="Outbreak-adjusted forecast">↑ {i.surge_reason}</span>}
-                  {i.incoming > 0 && <span className="pill in_transit">+{fmt(i.incoming)} incoming</span>}</td>
+                  {i.incoming > 0 && <span className="pill in_transit">+{fmt(i.incoming)} incoming</span>}
+                  {i.stale && <span className="pill grey" title="PHC has not reported for 3+ days: verify before acting">unverified</span>}</td>
               </tr>
             ))}
           </tbody>

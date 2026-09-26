@@ -80,9 +80,11 @@ def ussd(session_id: str, phone: str, text: str) -> str:
     report = _draft_to_report(draft)
     summary = _summary(report)
     if state == "review":
-        return f"CON Today's report:\n{summary}\n1. Submit\n0. Edit"
+        checks = "".join(f"! Check {_short_warning(x)}\n" for x in service.check_report(w["phc_id"], report))
+        return f"CON Today's report:\n{summary}\n{checks}1. Submit\n0. Edit"
     if state == "submit":
         if session_id not in _submitted:
+            report["warnings"] = service.check_report(w["phc_id"], report)   # confirmed on review
             service.apply_report(w["phc_id"], report, "ussd", "en", "ussd-menu", reporter=phone)
             _submitted.add(session_id)
         return f"END Submitted for {w['phc_code']}. Thank you!\n{summary}"
@@ -98,6 +100,12 @@ def _draft_to_report(draft: dict) -> dict:
     return rep
 
 
+def _short_warning(w: dict) -> str:
+    """Feature-phone sized: 'PCM 1500 (expected ~150)'."""
+    label = w["drug_code"] or {"opd_count": "OPD", "beds_occupied": "BED", "staff_present": "STF"}[w["field"]]
+    return f"{label} {w['reported']:g} (expected ~{w['expected']})"
+
+
 def _summary(rep: dict) -> str:
     parts = [f"{s['drug_code']} {s['quantity']:g}" for s in rep.get("stock", [])]
     for k, lab in (("beds_occupied", "BED"), ("staff_present", "STF"), ("opd_count", "OPD")):
@@ -111,9 +119,14 @@ def sms(phone: str, text: str) -> dict:
     w = worker_by_phone(phone)
     if not w:
         return {"reply": "Number not registered with PHC Pulse.", "saved": False}
-    p = nlu.parse(text)
+    body = text.strip()
+    confirmed = body.upper().endswith((" YES", " OK"))
+    if confirmed:
+        body = body.rsplit(" ", 1)[0]
+    p = nlu.parse(body)
     rep = {"stock": [{**s, "kind": "remaining"} for s in p["stock"]] +
-                    [{**s, "kind": "received"} for s in p["received"]]}
+                    [{**s, "kind": "received"} for s in p["received"]] +
+                    [{**s, "kind": "discarded"} for s in p["discarded"]]}
     for k in ("opd_count", "fever_cases", "diarrhoea_cases", "respiratory_cases",
               "beds_occupied", "staff_present"):
         if p.get(k) is not None:
@@ -121,7 +134,13 @@ def sms(phone: str, text: str) -> dict:
     if not rep["stock"] and len(rep) == 1:
         return {"reply": "Could not read report. Format: PCM 120 ORS 40 BED 4 STF 9 OPD 85",
                 "saved": False}
+    warnings = service.check_report(w["phc_id"], rep)
+    if warnings and not confirmed:
+        checks = "; ".join(_short_warning(x) for x in warnings)
+        return {"reply": f"PHC Pulse: please check {checks}. If correct, send the same SMS again "
+                         f"ending with YES.", "saved": False, "warnings": warnings}
     rep["transcript"] = text
+    rep["warnings"] = warnings
     service.apply_report(w["phc_id"], rep, "sms", w["language"], "sms-grammar", reporter=phone)
     return {"reply": f"PHC Pulse: saved for {w['phc_code']} - {_summary(rep)}", "saved": True,
             "report": rep}
@@ -150,6 +169,7 @@ def dialogflow_webhook(body: dict) -> dict:
     if params.get("utterance"):
         p = nlu.parse(str(params["utterance"]))
         rep["stock"] += [{**s, "kind": "remaining"} for s in p["stock"]]
+        rep["stock"] += [{**s, "kind": k} for k in ("received", "discarded") for s in p[k]]
     phc_row = service.get_phc(phc_id)
     rep["confirmation"] = gemini.confirmation_text(rep, lang, phc_row["name"])
     if tag == "submit-report":

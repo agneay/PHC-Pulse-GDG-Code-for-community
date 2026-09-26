@@ -21,6 +21,7 @@ from . import config, nlu
 from .reference import DRUGS, LANGUAGES
 
 log = logging.getLogger("phc.gemini")
+STOCK_KINDS = ("remaining", "received", "discarded")
 _client = None
 _client_err = None
 
@@ -54,7 +55,8 @@ def status() -> dict:
 class StockLine(BaseModel):
     drug_code: str = Field(description="One of the drug codes from the catalogue")
     quantity: float = Field(description="Number of units (strips/sachets/vials/...)")
-    kind: str = Field(description="'remaining' for current stock on shelf, 'received' for new supply received today")
+    kind: str = Field(description="'remaining' for current stock on shelf, 'received' for new supply "
+                                  "received today, 'discarded' for expired or damaged stock thrown away today")
 
 
 class ParsedReport(BaseModel):
@@ -97,6 +99,8 @@ Extract a structured daily report:
 - Remaining stock (and any stock received today) for the drugs below. Map local-language or
   brand names to the drug code. Quantities are in the drug's unit; if the worker says "boxes"
   or "packets", keep the number as said and mention it in notes.
+- Expired or damaged units that were thrown away are kind "discarded" (not "remaining"), so
+  they are not mistaken for medicine given to patients.
 - OPD footfall today, fever / diarrhoea / respiratory case counts, beds occupied, staff present.
 - Never invent numbers that were not said. Use null for anything not mentioned.
 
@@ -144,7 +148,8 @@ def parse_report(*, phc: dict, district: str, state: str, language: str,
             contents.append(f"Worker's report (transcribed text): {text}")
         try:
             rep = _gen_json(contents, ParsedReport)
-            rep["stock"] = [s for s in rep.get("stock", []) if s.get("drug_code") in
+            rep["stock"] = [{**s, "kind": s.get("kind") if s.get("kind") in STOCK_KINDS else "remaining"}
+                            for s in rep.get("stock", []) if s.get("drug_code") in
                             {d["code"] for d in DRUGS}]
             return {"report": rep, "engine": config.GEMINI_MODEL}
         except Exception as e:
@@ -171,6 +176,13 @@ FIELD_LABELS = {
     "kn": {"beds_occupied": "ಭರ್ತಿಯಾದ ಹಾಸಿಗೆಗಳು", "staff_present": "ಹಾಜರಿರುವ ಸಿಬ್ಬಂದಿ", "opd_count": "ಹೊರರೋಗಿಗಳು"},
     "or": {"beds_occupied": "ଭର୍ତ୍ତି ଶଯ୍ୟା", "staff_present": "ଉପସ୍ଥିତ କର୍ମଚାରୀ", "opd_count": "ଓପିଡି ରୋଗୀ"},
 }
+KIND_LABELS = {
+    "en": {"received": "received", "discarded": "discarded"},
+    "hi": {"received": "प्राप्त", "discarded": "नष्ट"},
+    "ta": {"received": "பெறப்பட்டது", "discarded": "அழிக்கப்பட்டது"},
+    "kn": {"received": "ಸ್ವೀಕರಿಸಲಾಗಿದೆ", "discarded": "ನಾಶಪಡಿಸಲಾಗಿದೆ"},
+    "or": {"received": "ପ୍ରାପ୍ତ", "discarded": "ନଷ୍ଟ"},
+}
 FOLLOW_UP = {
     "en": "How many beds are occupied and how many staff are present today?",
     "hi": "आज कितने बिस्तर भरे हैं और कितने स्टाफ उपस्थित हैं?",
@@ -186,7 +198,8 @@ def confirmation_text(rep: dict, language: str, phc_name: str) -> str:
     for s in rep.get("stock", []):
         d = next(d for d in DRUGS if d["code"] == s["drug_code"])
         name = d["names"].get(lang, d["name"]) if lang != "en" else d["name"]
-        parts.append(f"{name} {s['quantity']:g}")
+        tag = f" ({KIND_LABELS[lang][s['kind']]})" if s.get("kind") in KIND_LABELS[lang] else ""
+        parts.append(f"{name} {s['quantity']:g}{tag}")
     for k in ("beds_occupied", "staff_present", "opd_count"):
         if rep.get(k) is not None:
             parts.append(f"{FIELD_LABELS[lang][k]} {rep[k]}")
@@ -199,8 +212,9 @@ def _fallback_report(text: str, language: str, phc: dict, previous: Optional[dic
     stock = {(s["drug_code"], s.get("kind", "remaining")): s for s in rep.get("stock", [])}
     for s in p["stock"]:
         stock[(s["drug_code"], "remaining")] = {**s, "kind": "remaining"}
-    for s in p["received"]:
-        stock[(s["drug_code"], "received")] = {**s, "kind": "received"}
+    for kind in ("received", "discarded"):
+        for s in p[kind]:
+            stock[(s["drug_code"], kind)] = {**s, "kind": kind}
     rep["stock"] = list(stock.values())
     for k in ("opd_count", "fever_cases", "diarrhoea_cases", "respiratory_cases",
               "beds_occupied", "staff_present"):
@@ -254,6 +268,10 @@ def _fallback_briefing(s: dict) -> dict:
                        f"({c['syndrome']} cluster, {c['excess_cases']} excess cases).")
     for e in s.get("escalations", [])[:2]:
         actions.append(f"Raise emergency indent: {e['qty']:g} {e['drug']} for {e['phc']}.")
+    silent = s.get("silent_phcs", [])
+    if silent:
+        actions.append(f"Call {len(silent)} PHC(s) silent for 3+ days before acting on their numbers: "
+                       + ", ".join(p["phc"].split(" ")[0] for p in silent[:5]) + ".")
     return {
         "headline": f"{k['predicted_stockouts']} predicted stock-outs, {k['outbreak_clusters']} outbreak "
                     f"cluster(s), {k['recommended_transfers']} transfers ready for approval.",

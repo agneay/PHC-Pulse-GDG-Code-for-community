@@ -50,15 +50,19 @@ def test_deck_scenario_phc14_to_phc22(client):
 
 
 def test_text_report_fallback_and_submit(client):
-    parsed = client.post("/api/reports/parse", json={
+    h = login(client, "national")
+    parsed = client.post("/api/reports/parse", headers=h, json={
         "phc_id": 22, "language": "en",
         "text": "Paracetamol 150 strips, ORS 60 sachets, beds occupied 3, staff present 9, OPD 72"}).json()
     rep = parsed["report"]
     codes = {s["drug_code"]: s["quantity"] for s in rep["stock"]}
     assert codes["PCM"] == 150 and codes["ORS"] == 60
     assert rep["beds_occupied"] == 3 and rep["staff_present"] == 9 and rep["opd_count"] == 72
-    out = client.post("/api/reports/submit", json={"phc_id": 22, "language": "en", "channel": "voice",
-                                                    "engine": parsed["engine"], "report": rep}).json()
+    # ORS 229 -> 60 overnight at ~3/day is flagged; the worker confirms after re-checking
+    assert [w["field"] for w in parsed["warnings"]] == ["ORS"]
+    out = client.post("/api/reports/submit", headers=h, json={"phc_id": 22, "language": "en", "channel": "voice",
+                                                    "engine": parsed["engine"], "report": rep,
+                                                    "confirmed": True}).json()
     pcm = next(i for i in out["items"] if i["drug_code"] == "PCM")
     assert pcm["stock"] == 150
 
@@ -104,7 +108,7 @@ def test_ussd_flow(client):
 
 
 def test_sms_and_dialogflow(client):
-    r = client.post("/api/sms", json={"phone": "+919000000093", "text": "ORS 20 ZNC 5 BED 6 STF 8 OPD 140"}).json()
+    r = client.post("/api/sms", json={"phone": "+919000000093", "text": "ORS 20 ZNC 5 BED 6 STF 8 OPD 40"}).json()
     assert r["saved"]
     df = client.post("/api/dialogflow/webhook", json={
         "languageCode": "hi", "fulfillmentInfo": {"tag": "submit-report"},
@@ -118,7 +122,7 @@ def test_briefing_and_alert_fallback(client):
     b = client.get("/api/briefing").json()
     assert b["headline"] and b["actions"]
     cid = client.get("/api/alerts").json()["clusters"][0]["id"]
-    a = client.post(f"/api/clusters/{cid}/alert", json={}).json()
+    a = client.post(f"/api/clusters/{cid}/alert", json={}, headers=login(client, "national")).json()
     assert a["recommended_response"]
 
 

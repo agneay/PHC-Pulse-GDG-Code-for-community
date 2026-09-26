@@ -1,7 +1,7 @@
 import { useApp } from '../App'
 import Icon from '../components/Icon'
 import { Card, ErrorBox, Kpi, Loading, useAsync } from '../components/ui'
-import { api } from '../lib/api'
+import { api, download } from '../lib/api'
 import { fmt, pct } from '../lib/format'
 
 const PIPE = [
@@ -22,8 +22,10 @@ export default function ModelPage() {
 
   const reset = async () => {
     if (!window.confirm('Reset all demo data (reports, transfers) to the seeded state?')) return
-    await api.post('/api/admin/reset')
-    refresh(); notify('Demo data reset')
+    try {
+      await api.post('/api/admin/reset')
+      refresh(); notify('Demo data reset')
+    } catch (e) { notify(e.message) }
   }
 
   return (
@@ -35,7 +37,7 @@ export default function ModelPage() {
           <p>How the engine works, how well it performs on held-out history, and how it plugs into existing HMIS pipelines instead of replacing them.</p>
         </div>
         <div className="right">
-          <a className="btn" href={`/api/hmis/export.csv${scopeQs}${scopeQs ? '&' : '?'}month=${month}`}><Icon name="download" size={15} />HMIS export ({month})</a>
+          <button className="btn" onClick={() => download(`/api/hmis/export.csv${scopeQs}${scopeQs ? '&' : '?'}month=${month}`, `phc_pulse_hmis_${month}.csv`).catch((e) => notify(e.message))}><Icon name="download" size={15} />HMIS export ({month})</button>
           <a className="btn" href="/docs" target="_blank" rel="noreferrer">API docs</a>
           <button className="btn ghost" onClick={reset}><Icon name="refresh" size={15} />Reset demo</button>
         </div>

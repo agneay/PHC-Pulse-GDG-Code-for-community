@@ -15,6 +15,7 @@ Formulated as a mixed-integer program solved with HiGHS (scipy.optimize.milp):
 escalated to the district warehouse as emergency indents.
 """
 import hashlib
+import logging
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
@@ -28,6 +29,7 @@ HANDLING_PER_UNIT = 0.5
 CANDIDATES_PER_DEFICIT = 6
 MAX_KM_SAME_STATE = 220.0
 MAX_KM_CROSS_STATE = 450.0
+log = logging.getLogger("phc.redistribution")
 
 
 def lane_cost(road_km: float, cross_state: bool) -> float:
@@ -54,7 +56,9 @@ def optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
             "stats": _stats(len(ships), met, need, "HiGHS MILP, solved per state",
                             cost=float(sum(s["cost_inr"] for s in ships)),
                             lanes=sum(p["stats"].get("lanes", 0) for p in parts),
-                            variables=sum(p["stats"].get("variables", 0) for p in parts))}
+                            variables=sum(p["stats"].get("variables", 0) for p in parts),
+                            failed=any(p["stats"].get("failed") for p in parts),
+                            time_limited=any(p["stats"].get("time_limited") for p in parts))}
 
 
 def _optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
@@ -136,7 +140,12 @@ def _optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
                bounds=Bounds(np.zeros_like(ub), ub),
                options={"time_limit": 8, "mip_rel_gap": 0.01})
     if res.x is None:
-        return {"shipments": [], "escalations": [], "stats": _stats(0, 0, 0, res.message)}
+        # Never let a solver failure look like "nothing to move": flag it for the dashboard.
+        log.error("redistribution MILP failed (status %s): %s", res.status, res.message)
+        return {"shipments": [], "escalations": [], "stats": _stats(
+            0, 0, float(sum(d["need"] for d in deficits)), res.message, failed=True)}
+    if res.status == 1:
+        log.warning("redistribution MILP hit its time limit; plan may be sub-optimal")
 
     x, y, u = res.x[:nx], res.x[nx:nx + ny], res.x[nx + ny:]
     shipments = {}
@@ -177,7 +186,7 @@ def _optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
     return {"shipments": out, "escalations": escalations,
             "stats": _stats(len(out), met, total_need, res.message,
                             cost=float(sum(s["cost_inr"] for s in out)),
-                            lanes=ny, variables=nx + ny + nu)}
+                            lanes=ny, variables=nx + ny + nu, time_limited=res.status == 1)}
 
 
 def _stats(n, met, need, msg, **kw):

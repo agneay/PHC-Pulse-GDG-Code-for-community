@@ -31,7 +31,7 @@ export default function Command() {
       </div>
 
       <div className="grid g-kpi">
-        <Kpi icon="pulse" label="PHCs reporting today" value={`${k.phcs_reporting_today}/${k.phcs}`} sub={`${pct(k.phcs_reporting_today / k.phcs)} compliance`} />
+        <Kpi icon="pulse" label="PHCs reporting today" value={`${k.phcs_reporting_today}/${k.phcs}`} sub={`${pct(k.phcs_reporting_today / k.phcs)} compliance${k.stale_phcs ? ` · ${k.stale_phcs} silent 3+ days` : ''}`} />
         <Kpi icon="alert" tone="alert" label="Predicted stock-outs" value={k.predicted_stockouts} sub={`before next supply · ${k.critical_items} within 7 days`} />
         <Kpi icon="pill" tone="warn" label="Stocked out now" value={k.stocked_out_items} sub="drug lines at zero" />
         <Kpi icon="bug" tone={k.outbreak_clusters ? 'alert' : ''} label="Outbreak clusters" value={k.outbreak_clusters} sub={`${k.anomalies} PHC-level footfall anomalies`} />
@@ -117,7 +117,7 @@ export default function Command() {
                 <td className="r num">{p.high_items}</td>
                 <td className="r num">{p.beds_occupied ?? '–'}/{p.beds_total}</td>
                 <td className="r num">{p.staff_present ?? '–'}/{p.staff_sanctioned}</td>
-                <td>{p.reported_today ? <span className="pill ok">today</span> : <span className="pill grey">due</span>}</td>
+                <td><ReportAge p={p} /></td>
               </tr>
             ))}
           </tbody>
@@ -126,4 +126,11 @@ export default function Command() {
       <div className="muted small">Engine recomputed {data.computed_at} in {data.compute_ms} ms · forecasts {fmt(data.phcs.length * 10)} PHC×drug series</div>
     </>
   )
+}
+
+// Reporting freshness: silent PHCs are shown as unverified, not trusted as current.
+export function ReportAge({ p }) {
+  if (p.reported_today) return <span className="pill ok">today</span>
+  if (p.stale) return <span className="pill red" title="No report for 3+ days: numbers unverified, excluded from outbreak detection and transfers">silent {p.days_since_report}d</span>
+  return <span className="pill grey">due</span>
 }

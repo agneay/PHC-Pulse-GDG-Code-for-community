@@ -42,8 +42,10 @@ def baseline(series: np.ndarray, wf: np.ndarray, wday: np.ndarray, t: int):
     return exp, scale
 
 
-def detect(foot: dict, wday: np.ndarray, last_idx: np.ndarray, phcs: list, days: list) -> dict:
+def detect(foot: dict, wday: np.ndarray, last_idx: np.ndarray, phcs: list, days: list,
+           active: np.ndarray = None) -> dict:
     """foot: {'opd','fever','diarrhoea','respiratory'} -> (N, T) arrays (NaN = no report).
+    `active`: PHCs whose latest report is recent enough to count as a current signal.
     Returns PHC-level anomalies, clusters, and per-PHC expected bands for charts."""
     N, T = foot["opd"].shape
     wf = weekday_factors(foot["opd"], wday)
@@ -60,7 +62,7 @@ def detect(foot: dict, wday: np.ndarray, last_idx: np.ndarray, phcs: list, days:
                 exp_all[m], sc_all[m] = baseline(s[m], wf[m], wday, int(t))
             for i in range(N):
                 t = int(t_arr[i])
-                if t < BASELINE_DAYS or np.isnan(s[i, t]) or np.isnan(exp_all[i]):
+                if (active is not None and not active[i]) or t < BASELINE_DAYS or np.isnan(s[i, t]) or np.isnan(exp_all[i]):
                     continue
                 x, e, sc = float(s[i, t]), float(exp_all[i]), float(sc_all[i])
                 z = (x - e) / sc
@@ -86,22 +88,42 @@ def detect(foot: dict, wday: np.ndarray, last_idx: np.ndarray, phcs: list, days:
     specific = {a["phc_id"] for a in phc_anoms if a["syndrome"] != "opd"}
     phc_anoms = [a for a in phc_anoms if a["syndrome"] != "opd" or a["phc_id"] not in specific]
 
+    # Clusters are geographic: PHCs linked by <= 50 km hops, whatever district or state they are
+    # in (an outbreak on a district border is one event, not two smaller ones).
     clusters = []
-    by_syn = {}
-    for a in phc_anoms:
-        by_syn.setdefault((a["district_code"], a["syndrome"]), []).append(a)
     pos = {p["id"]: (p["lat"], p["lon"]) for p in phcs}
-    for (dist, syn), items in by_syn.items():
-        if len(items) < 2 or syn == "opd":
+    for syn in SYNDROMES:
+        items = [a for a in phc_anoms if a["syndrome"] == syn]
+        if syn == "opd" or len(items) < 2:
             continue
-        members = [a for a in items if any(
-            b is not a and haversine_km(*pos[a["phc_id"]], *pos[b["phc_id"]]) <= CLUSTER_KM
-            for b in items)]
-        if len(members) >= 2:
+        group = list(range(len(items)))          # union-find over <= CLUSTER_KM links
+
+        def root(x):
+            while group[x] != x:
+                group[x] = group[group[x]]
+                x = group[x]
+            return x
+        for a in range(len(items)):
+            for b in range(a + 1, len(items)):
+                if haversine_km(*pos[items[a]["phc_id"]], *pos[items[b]["phc_id"]]) <= CLUSTER_KM:
+                    group[root(a)] = root(b)
+        comps = {}
+        for a in range(len(items)):
+            comps.setdefault(root(a), []).append(items[a])
+        for members in comps.values():
+            if len(members) < 2:
+                continue
+            districts = [m["district_code"] for m in members]
+            dist = max(set(districts), key=lambda d: (districts.count(d), d))   # majority district
+            cid = f"CL-{dist}-{syn}"
+            while any(c["id"] == cid for c in clusters):
+                cid += "-b"
             lat = float(np.mean([pos[m["phc_id"]][0] for m in members]))
             lon = float(np.mean([pos[m["phc_id"]][1] for m in members]))
             clusters.append({
-                "id": f"CL-{dist}-{syn}", "district_code": dist, "state_code": members[0]["state_code"],
+                "id": cid, "district_code": dist,
+                "district_codes": sorted(set(districts)),
+                "state_code": next(m["state_code"] for m in members if m["district_code"] == dist),
                 "syndrome": syn, "phc_ids": [m["phc_id"] for m in members],
                 "phc_codes": [m["phc_code"] for m in members],
                 "excess_cases": int(sum(m["observed"] - m["expected"] for m in members)),

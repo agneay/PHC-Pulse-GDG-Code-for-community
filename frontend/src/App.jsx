@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import Icon from './components/Icon'
 import { EngineTag, Loading } from './components/ui'
-import { api, qs, setToken } from './lib/api'
+import { api, ensureToken, qs, setToken } from './lib/api'
 import Command from './pages/Command'
 import ModelPage from './pages/Model'
 import Outbreaks from './pages/Outbreaks'
@@ -24,7 +24,16 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const loc = useLocation()
 
-  const loadMeta = useCallback(() => api.get('/api/meta').then(setMeta), [])
+  const loadMeta = useCallback(async () => {
+    try {
+      await ensureToken()
+      setMeta(await api.get('/api/meta'))
+    } catch {
+      // A token signed with an old secret gets a 401 and is cleared by the API layer: sign in again.
+      await ensureToken()
+      setMeta(await api.get('/api/meta'))
+    }
+  }, [])
   useEffect(() => { loadMeta() }, [loadMeta])
   useEffect(() => { setMenuOpen(false) }, [loc.pathname])
 

@@ -38,6 +38,7 @@ export default function PhcDetail() {
           <p>{p.is_24x7 ? '24×7 PHC' : 'Day PHC'} · {p.beds_total} beds · {p.staff_sanctioned} sanctioned staff · reporting language {lang.native} · last report {p.last_report}</p>
         </div>
         <div className="right">
+          {p.stale && <span className="pill red" style={{ fontSize: 14, padding: '4px 12px' }} title="Numbers below are from the last report and may be out of date. This PHC is excluded from outbreak detection and transfers until it reports.">No report for {p.days_since_report} days</span>}
           <span className={`pill ${p.health}`} style={{ fontSize: 14, padding: '4px 12px' }}>Resilience {p.score}/100</span>
           <Link className="btn" to={`/report?phc=${p.id}`}><Icon name="mic" size={15} />Report for this PHC</Link>
         </div>
