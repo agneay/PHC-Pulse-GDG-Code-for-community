@@ -40,7 +40,7 @@ export default function Outbreaks() {
         </div>
       </div>
 
-      <div className="grid g-2">
+      <div className="grid g-2" data-tour="outbreaks">
         <div className="stack" style={{ gap: 18 }}>
           {!data.clusters.length && <Card><div className="empty">{t('out.noClusters')}</div></Card>}
           {data.clusters.map((c) => {

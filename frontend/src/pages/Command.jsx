@@ -33,7 +33,7 @@ export default function Command() {
         </div>
       </div>
 
-      <div className="grid g-kpi">
+      <div className="grid g-kpi" data-tour="kpis">
         <Kpi icon="pulse" label={t('kpi.reporting')} value={`${k.phcs_reporting_today}/${k.phcs}`}
           sub={t('kpi.compliance', { pct: pct(k.phcs_reporting_today / k.phcs) }) + (k.stale_phcs ? ` · ${t('kpi.silent', { n: k.stale_phcs })}` : '')} />
         <Kpi icon="alert" tone="alert" label={t('kpi.predicted')} value={k.predicted_stockouts} sub={t('kpi.predictedSub', { n: k.critical_items })} />
@@ -44,7 +44,7 @@ export default function Command() {
       </div>
 
       <div className="grid g-2">
-        <Card title={t('cmd.network')} icon="map" hint={t('cmd.networkHint')}
+        <Card tour="map" title={t('cmd.network')} icon="map" hint={t('cmd.networkHint')}
           right={<div className="legend">
             {Object.entries(HEALTH_COLOR).map(([h, c]) => <span key={h}><span className="dot" style={{ background: c }} />{t(`health.${h}`)} ({k.health[h]})</span>)}
             <span><span className="dot" style={{ border: '2px dashed #c62828' }} />{t('cmd.legendCluster')}</span>

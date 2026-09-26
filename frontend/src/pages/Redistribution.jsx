@@ -87,7 +87,7 @@ export default function Redistribution() {
       </div>
 
       <div className="grid g-2">
-        <Card title={t('redis.recommended')} icon="truck" hint={t('redis.byUrgency')}
+        <Card tour="redis-recs" title={t('redis.recommended')} icon="truck" hint={t('redis.byUrgency')}
           bodyClass="card-b" right={<span className="muted small">{st.solver}</span>}>
           <div className="stack" style={{ maxHeight: 620, overflowY: 'auto', paddingRight: 4 }}>
             {data.shipments.map((s) => (
@@ -128,7 +128,7 @@ export default function Redistribution() {
         </Card>
       </div>
 
-      <Card title={t('redis.tracker')} icon="refresh" hint={t('redis.trackerHint')} bodyClass="table-wrap">
+      <Card tour="redis-tracker" title={t('redis.tracker')} icon="refresh" hint={t('redis.trackerHint')} bodyClass="table-wrap">
         {!active.length ? <div className="empty">{t('redis.noTransfers')}</div> : (
           <table className="t">
             <thead><tr><th>{t('th.lane')}</th><th>{t('th.items')}</th><th>{t('th.progress')}</th><th>{t('th.approvedBy')}</th><th /></tr></thead>

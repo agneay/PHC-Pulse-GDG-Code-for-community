@@ -7,6 +7,7 @@ import { Card, EngineTag, StatusPill, useAsync } from '../components/ui'
 import { useI18n } from '../i18n'
 import { api } from '../lib/api'
 import { daysText, drugLabel, fmt, unitLabel } from '../lib/format'
+import { sttCodes } from '../lib/speech'
 import { blobToWav, stopSpeaking } from '../lib/wav'
 
 // What the worker says / sees in the *reporting* language (the PHC's language by default),
@@ -24,6 +25,15 @@ const SAMPLES = {
   ml: 'പാരസെറ്റമോൾ 150 സ്ട്രിപ്പ് ബാക്കിയുണ്ട്, ഒആർഎസ് 60 പാക്കറ്റ്, 3 കിടക്കകൾ നിറഞ്ഞു, 9 ജീവനക്കാർ ഹാജർ, ഇന്ന് ഒപിയിൽ 72 രോഗികൾ.',
   pa: 'ਪੈਰਾਸੀਟਾਮੋਲ ਦੀਆਂ 150 ਸਟ੍ਰਿਪਾਂ ਬਚੀਆਂ ਹਨ, ਓਆਰਐਸ 60 ਪੈਕੇਟ, 3 ਬਿਸਤਰੇ ਭਰੇ, 9 ਸਟਾਫ਼ ਹਾਜ਼ਰ, ਅੱਜ ਓਪੀਡੀ ਵਿੱਚ 72 ਮਰੀਜ਼।',
   ur: 'پیراسیٹامول کی 150 سٹرپ باقی ہیں، او آر ایس 60 پیکٹ، 3 بستر بھرے ہیں، 9 عملہ حاضر ہے، آج او پی ڈی میں 72 مریض آئے۔',
+  as: 'পেৰাচিটামল 150 ষ্ট্ৰিপ আছে, অ’আৰএছ 60 পেকেট, 3 খন বিচনা ভৰ্তি, 9 জন কৰ্মচাৰী উপস্থিত, আজি 72 জন ৰোগী।',
+  ne: 'प्यारासिटामोल 150 स्ट्रिप बाँकी छ, ओआरएस 60 प्याकेट, 3 बेड भरिएका छन्, 9 जना कर्मचारी उपस्थित, आज ओपीडीमा 72 बिरामी।',
+  mai: 'पैरासिटामोलक 150 स्ट्रिप बचल अछि, ओआरएस 60 पैकेट, 3 बेड भरल, 9 स्टाफ आएल, आइ ओपीडीमे 72 रोगी।',
+  kok: 'पॅरासिटामॉलच्यो 150 स्ट्रिप उरल्यात, ओआरएस 60 पाकीटां, 3 खाटी भरल्यात, 9 कर्मचारी हाजीर, आयज ओपीडींत 72 रुग्ण.',
+  doi: 'पैरासिटामोल दियां 150 स्ट्रिपां बचियां न, ओआरएस 60 पैकेट, 3 बिस्तर भरोचे न, 9 स्टाफ आए दा ऐ, अज्ज ओपीडी च 72 मरीज़।',
+  sa: 'पैरासिटामोल 150 पट्टिकाः अवशिष्टाः, ओआरएस 60 पुटकाः, 3 शय्याः पूरिताः, 9 कर्मकराः उपस्थिताः, अद्य OPD मध्ये 72 रोगिणः।',
+  brx: 'पेरासिटामल 150 स्ट्रिप दं, ओआरएस 60 पेकेट, 3 बिसना आबुं, 9 हाबसुलुगिरि फैबाय, दिनै OPD आव 72 बेमारि।',
+  ks: 'پیراسیٹامول 150 سٹرپ بچیمٕتۍ، او آر ایس 60 پیکٹ، 3 بسترٕ بٔرِتھ، 9 عملہ حاضر، اَز OPD منز 72 مریض۔',
+  sd: 'پيراسيٽامول 150 پٽيون بچيل آهن، او آر ايس 60 پيڪٽ، 3 بستر ڀريل، 9 عملو حاضر، اڄ OPD ۾ 72 مريض.',
 }
 const PROMPT = {
   en: 'Tell me today\'s stock, beds, staff and patients.',
@@ -38,6 +48,15 @@ const PROMPT = {
   ml: 'ഇന്നത്തെ മരുന്ന് സ്റ്റോക്ക്, കിടക്കകൾ, ജീവനക്കാർ, രോഗികളുടെ എണ്ണം പറയൂ.',
   pa: 'ਅੱਜ ਦਾ ਦਵਾਈ ਸਟਾਕ, ਬਿਸਤਰੇ, ਸਟਾਫ਼ ਅਤੇ ਮਰੀਜ਼ਾਂ ਦੀ ਗਿਣਤੀ ਦੱਸੋ।',
   ur: 'آج کا دواؤں کا اسٹاک، بستر، عملہ اور مریضوں کی تعداد بتائیں۔',
+  as: 'আজিৰ ঔষধৰ মজুত, বিচনা, কৰ্মচাৰী আৰু ৰোগীৰ সংখ্যা কওক।',
+  ne: 'आजको औषधि मौज्दात, बेड, कर्मचारी र बिरामीको संख्या भन्नुहोस्।',
+  mai: 'आजुक दवाइक स्टॉक, बेड, स्टाफ आ रोगीक संख्या कहू।',
+  kok: 'आयचो वखदांचो साठो, खाटी, कर्मचारी आनी रुग्णांची संख्या सांगात.',
+  doi: 'अज्ज दा दवाई स्टॉक, बिस्तर, स्टाफ ते मरीज़ें दी गिनती दस्सो।',
+  sa: 'अद्यतनं औषधसञ्चयं, शय्याः, कर्मकरान्, रोगिसङ्ख्यां च वदतु।',
+  brx: 'दिनैनि मुलि स्टक, बिसना, हाबसुलुगिरि आरो बेमारिनि अनजिमा बुंहो।',
+  ks: 'اَزُک دَوا سٹاک، بسترٕ، عملہ تہٕ مریضن ہٕنز تعداد ونِیو۔',
+  sd: 'اڄ جو دوائن جو اسٽاڪ، بستر، عملو ۽ مريضن جو تعداد ٻڌايو.',
 }
 const FIELDS = ['opd_count', 'fever_cases', 'diarrhoea_cases', 'respiratory_cases', 'beds_occupied', 'staff_present']
 const MAX_SECONDS = 60
@@ -67,6 +86,8 @@ export default function VoiceReport() {
   const finals = useRef('')                   // recognised text kept across recogniser restarts
   const srDone = useRef(null)                 // resolves when the recogniser has flushed its last result
   const followUp = useRef(false)
+  const sttIdx = useRef(0)                    // which of sttCodes(language) the browser accepted
+  const [sttNote, setSttNote] = useState('')
 
   const phc = phcs.data?.phcs.find((p) => p.id === phcId)
   useEffect(() => {   // requested PHC outside the user's jurisdiction -> make them pick one
@@ -96,7 +117,7 @@ export default function VoiceReport() {
   }, [])
   useEffect(() => { if (rec && secs >= MAX_SECONDS) stop() })   // hard cap: 60 s per report
 
-  const reset = () => { setOut(null); setSaved(null); setErr(null); setLive(''); followUp.current = false }
+  const reset = () => { setOut(null); setSaved(null); setErr(null); setLive(''); followUp.current = false; sttIdx.current = 0; setSttNote('') }
 
   const handleResult = (r) => {
     setOut(r)
@@ -115,9 +136,10 @@ export default function VoiceReport() {
   // Browser speech-to-text (used when Gemini is off). Chrome ends "continuous" recognition after
   // a pause, so it is restarted until the worker presses stop, keeping what was already heard.
   const startRecogniser = () => {
+    const codes = sttCodes(language, bcp)
     const r = new SR()
-    r.lang = bcp; r.continuous = true; r.interimResults = true
-    let doneResolve
+    r.lang = codes[Math.min(sttIdx.current, codes.length - 1)]; r.continuous = true; r.interimResults = true
+    let doneResolve, switching = false
     srDone.current = new Promise((res) => { doneResolve = res })
     r.onresult = (e) => {
       let interim = ''
@@ -129,10 +151,20 @@ export default function VoiceReport() {
     }
     r.onerror = (e) => {
       if (e.error === 'no-speech' || e.error === 'aborted') return
+      if (e.error === 'language-not-supported' && sttIdx.current < codes.length - 1) {
+        // No recogniser for this language in this browser: listen in the next (related) one.
+        sttIdx.current += 1
+        const next = codes[sttIdx.current]
+        const nearLang = Object.entries(meta.languages).find(([, l]) => l.bcp47 === next || next.startsWith(`${l.bcp47.split('-')[0]}-`))
+        if (nearLang?.[0] !== language) setSttNote(t('voice.sttNear', { language: meta.languages[language].native, near: nearLang?.[1].native || next }))
+        switching = true
+        return
+      }
       setErr(micError(e.error))
       stop()
     }
     r.onend = () => {
+      if (switching && recording.current) { doneResolve(); startRecogniser(); return }
       if (recording.current) { try { r.start(); return } catch { /* fall through */ } }
       doneResolve()
     }
@@ -229,7 +261,7 @@ export default function VoiceReport() {
       </div>
 
       <div className="voice-hero">
-        <Card title={t('voice.step1')} icon="users">
+        <Card tour="voice-who" title={t('voice.step1')} icon="users">
           <div className="stack">
             <div className="row">
               <select className="select" style={{ flex: 1 }} value={phcId ?? ''} disabled={!!userPhc}
@@ -262,7 +294,7 @@ export default function VoiceReport() {
           </div>
         </Card>
 
-        <Card title={t('voice.step2')} icon="mic" right={<div className="lang-tabs">
+        <Card tour="voice-speak" title={t('voice.step2')} icon="mic" right={<div className="lang-tabs">
           <button className={mode === 'voice' ? 'on' : ''} onClick={() => setMode('voice')}>{t('voice.modeVoice')}</button>
           <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>{t('voice.modeType')}</button></div>}>
           {mode === 'voice' ? (
@@ -276,7 +308,8 @@ export default function VoiceReport() {
               </div>
               {!phcId && <div className="note" style={{ marginTop: 10 }}>{t('voice.pickPhcFirst')}</div>}
               {busy && <div className="row" style={{ justifyContent: 'center', marginTop: 6 }}><span className="spinner" /> {gem ? t('voice.busyGemini') : t('voice.busyParsing')}</div>}
-              {live && <div className="note" style={{ marginTop: 10, textAlign: 'left' }} lang={language}>{live}</div>}
+              {sttNote && <div className="muted small" style={{ marginTop: 8 }}>{sttNote}</div>}
+              {live && <div className="note" style={{ marginTop: 10, textAlign: 'start' }} lang={language}>{live}</div>}
               {!voiceWorks && <div className="note" style={{ marginTop: 10 }}>{gem ? t('voice.noRecorder') : t('voice.noRecognition')}</div>}
             </div>
           ) : (

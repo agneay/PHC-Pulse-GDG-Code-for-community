@@ -46,7 +46,7 @@ export default function Stock() {
         {Object.keys(ORDER).map((s) => <span key={s} className={`pill ${s}`}>{t(`status.${s}`)}: {counts[s]}</span>)}
       </div>
 
-      <Card title={t('stock.matrix')} hint={t('stock.matrixHint')}
+      <Card tour="stock-matrix" title={t('stock.matrix')} hint={t('stock.matrixHint')}
         right={<label className="row small"><input type="checkbox" checked={onlyRisk} onChange={(e) => setOnlyRisk(e.target.checked)} /> {t('stock.onlyRisk')}</label>}
         bodyClass="card-b table-wrap">
         <table className="heat">
@@ -72,7 +72,7 @@ export default function Stock() {
         {!matrix.length && <div className="empty">{t('stock.noRisk')}</div>}
       </Card>
 
-      <Card title={t('stock.warnings')} icon="alert" hint={t('stock.lines', { n: warnings.length })}
+      <Card tour="stock-warnings" title={t('stock.warnings')} icon="alert" hint={t('stock.lines', { n: warnings.length })}
         right={<select className="select" value={drug} onChange={(e) => setDrug(e.target.value)} aria-label={t('stock.filterDrug')}>
           <option value="">{t('stock.allDrugs')}</option>
           {data.drugs.map((d) => <option key={d.code} value={d.code}>{drugLabel(d, lang)}</option>)}

@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import Icon from './components/Icon'
 import LanguageGate from './components/LanguageGate'
+import Tour, { TourOffer } from './components/Tour'
 import { EngineTag, Loading } from './components/ui'
 import { FONT_STEPS, UI_LANGS, useI18n } from './i18n'
 import { api, ensureToken, qs, signIn } from './lib/api'
@@ -26,6 +27,7 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [askOpen, setAskOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [touring, setTouring] = useState(false)
   const loc = useLocation()
 
   const loadMeta = useCallback(async () => {
@@ -70,7 +72,7 @@ export default function App() {
   return (
     <Ctx.Provider value={value}>
       <div className="shell">
-        <aside className={`side ${menuOpen ? 'open' : ''}`}>
+        <aside className={`side ${menuOpen ? 'open' : ''}`} data-tour="nav">
           <div className="brand">
             <div className="brand-mark"><Icon name="pulse" size={20} stroke={2.6} /></div>
             <div><b>PHC Pulse</b><small>{t('brand.tagline')}</small></div>
@@ -94,7 +96,7 @@ export default function App() {
         {menuOpen && <div className="drawer-bg" style={{ zIndex: 940 }} onClick={() => setMenuOpen(false)} />}
         <div className="main">
           <header className="topbar">
-            <button className="menu-btn" onClick={() => setMenuOpen(true)} aria-label={t('topbar.menu')}><Icon name="menu" /></button>
+            <button className="menu-btn" onClick={() => setMenuOpen(true)} aria-label={t('topbar.menu')} data-tour="menu"><Icon name="menu" /></button>
             <div>
               <div className="title">{personaName(user, t, meta)}</div>
               <div className="sub">{t(`view.${user.role}`)} · {t('topbar.rls')}</div>
@@ -117,12 +119,13 @@ export default function App() {
               </div>
             )}
             <select className="select" value={meta.personas.find((p) => p.name === user.name)?.id || 'national'}
-              onChange={(e) => switchPersona(e.target.value)} aria-label={t('topbar.role')} title={t('topbar.roleTitle')}>
+              onChange={(e) => switchPersona(e.target.value)} aria-label={t('topbar.role')} title={t('topbar.roleTitle')} data-tour="role">
               {meta.personas.map((p) => <option key={p.id} value={p.id}>{personaName(p, t, meta)}</option>)}
             </select>
             <DisplaySettings />
             <EngineTag engine={meta.gemini.enabled ? meta.gemini.model : 'rules'} />
-            <button className="btn primary sm" onClick={() => setAskOpen(true)}><Icon name="spark" size={15} />{t('topbar.ask')}</button>
+            <HelpMenu onTour={() => { setMenuOpen(false); setTouring(true) }} />
+            <button className="btn primary sm" onClick={() => setAskOpen(true)} data-tour="ask"><Icon name="spark" size={15} />{t('topbar.ask')}</button>
           </header>
           <main className="content">
             <Routes>
@@ -141,6 +144,7 @@ export default function App() {
       {askOpen && <AskDrawer onClose={() => setAskOpen(false)} />}
       {toast && <div className="toast" role="status">{toast}</div>}
       <LanguageGate />
+      {touring ? <Tour onClose={() => setTouring(false)} /> : <TourOffer onStart={() => setTouring(true)} />}
     </Ctx.Provider>
   )
 }
@@ -149,7 +153,7 @@ export default function App() {
 function DisplaySettings() {
   const { t, lang, setLang, fontScale, stepFont } = useI18n()
   return (
-    <div className="row settings" role="group" aria-label={t('settings.label')}>
+    <div className="row settings" role="group" aria-label={t('settings.label')} data-tour="display">
       <label className="lang-pick" title={t('settings.language')}>
         <Icon name="globe" size={15} />
         <select className="select" value={lang} onChange={(e) => setLang(e.target.value)} aria-label={t('settings.language')}>
@@ -162,6 +166,40 @@ function DisplaySettings() {
         <button className="btn sm big" onClick={() => stepFont(1)} disabled={fontScale === FONT_STEPS.at(-1)}
           aria-label={t('settings.larger')} title={t('settings.larger')}>A<span aria-hidden="true">+</span></button>
       </div>
+    </div>
+  )
+}
+
+/** Help button: the guided tour for beginners, plus the API docs for integrators. */
+function HelpMenu({ onTour }) {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', away)
+    document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc) }
+  }, [open])
+  return (
+    <div className="help" ref={ref} data-tour="help">
+      <button className="btn sm" onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open}>
+        <Icon name="help" size={15} />{t('help.title')}
+      </button>
+      {open && (
+        <div className="help-menu" role="menu">
+          <button role="menuitem" onClick={() => { setOpen(false); onTour() }} autoFocus>
+            <Icon name="flag" size={17} />
+            <span><b>{t('help.tour')}</b><small>{t('help.tourSub')}</small></span>
+          </button>
+          <a role="menuitem" href="/docs" target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>
+            <Icon name="chip" size={17} />
+            <span><b>{t('help.docs')}</b><small>{t('help.docsSub')}</small></span>
+          </a>
+        </div>
+      )}
     </div>
   )
 }

@@ -24,6 +24,8 @@ const P = {
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
   type: 'M4 7V5h16v2M9 19h6M12 5v14',
   msg: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01',
+  flag: 'M4 21V4M4 4h13l-2 4 2 4H4',
 }
 
 export default function Icon({ name, size = 18, stroke = 2, style }) {

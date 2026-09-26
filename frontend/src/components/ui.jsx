@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
 import Icon from './Icon'
 
-export function Card({ title, hint, right, children, className = '', bodyClass = 'card-b', icon }) {
+export function Card({ title, hint, right, children, className = '', bodyClass = 'card-b', icon, tour }) {
   return (
-    <section className={`card ${className}`}>
+    <section className={`card ${className}`} data-tour={tour}>
       {(title || right) && (
         <div className="card-h">
           {icon && <span style={{ color: 'var(--red)', display: 'flex' }}><Icon name={icon} size={17} /></span>}

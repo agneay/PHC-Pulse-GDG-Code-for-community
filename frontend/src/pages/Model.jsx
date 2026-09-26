@@ -46,7 +46,7 @@ export default function ModelPage() {
         <Kpi icon="chip" label={t('model.kpiCompute')} value={`${fmt(data.compute_ms)} ms`} sub={t('model.kpiComputeSub', { n: data.forecaster.series })} />
       </div>
 
-      <Card title={t('model.pipeline')} icon="pulse" hint={t('model.pipelineHint')}>
+      <Card tour="model-pipeline" title={t('model.pipeline')} icon="pulse" hint={t('model.pipelineHint')}>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
           {PIPE.map(([ic, k], i) => (
             <div key={k} className="rec" style={{ background: 'var(--blush-50)' }}>

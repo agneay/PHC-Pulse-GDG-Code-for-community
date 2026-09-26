@@ -23,7 +23,7 @@ export default function Briefing() {
   }
 
   return (
-    <Card className="ai-card" icon="spark" title={t('brief.title')}
+    <Card tour="briefing" className="ai-card" icon="spark" title={t('brief.title')}
       right={<>
         <select className="select" value={lang} aria-label={t('brief.language')}
           onChange={(e) => { setLang(e.target.value); if (data) load(e.target.value) }}>

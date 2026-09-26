@@ -305,15 +305,25 @@ def tts(text: str, language: str) -> bytes:
         return _tts_cache[key]
     from google.genai import types
     lang = LANGUAGES.get(language, LANGUAGES["en"])
-    resp = client().models.generate_content(
-        model=config.GEMINI_TTS_MODEL,
-        contents=f"Read this aloud in {lang['name']}, clearly and warmly, at a calm pace: {text}",
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                language_code=lang["bcp47"],
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=config.GEMINI_TTS_VOICE)))))
+    voice = types.VoiceConfig(
+        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=config.GEMINI_TTS_VOICE))
+
+    def speak(language_code):
+        return client().models.generate_content(
+            model=config.GEMINI_TTS_MODEL,
+            contents=(f"Read this aloud in {lang['name']} ({lang['native']}), with natural "
+                      f"{lang['name']} pronunciation, clearly and warmly, at a calm pace: {text}"),
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(language_code=language_code, voice_config=voice)))
+
+    # The TTS model accepts an explicit code only for some languages. For the rest (Santali,
+    # Bodo, Dogri...) it rejects the code, so retry and let it infer the language from the text.
+    try:
+        resp = speak(lang["bcp47"])
+    except Exception as e:
+        log.info("TTS rejected %s (%s); retrying with auto-detected language", lang["bcp47"], e)
+        resp = speak(None)
     blob = resp.candidates[0].content.parts[0].inline_data
     wav = _pcm_to_wav(blob.data, blob.mime_type or "")
     if len(_tts_cache) > 200:

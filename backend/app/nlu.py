@@ -1,5 +1,5 @@
 """Rule-based fallback parser, used only when Gemini is not configured. It understands
-English / Hinglish free text ("paracetamol 120 strips, ORS 40, beds 4, staff 9, OPD 85")
+English / Hinglish free text, keywords in the scheduled Indian languages, native digits ("paracetamol 120 strips, ORS 40, beds 4, staff 9, OPD 85")
 and the compact SMS grammar ("PCM 120 ORS 40 BED 4 STF 9 OPD 85")."""
 import re
 
@@ -16,26 +16,32 @@ NUM_WORDS = {
 }
 FIELD_WORDS = {
     "beds_occupied": ["bed", "beds", "bistar", "admitted", "inpatient", "ipd",
-                      "बिस्तर", "पलंग", "படுக்கை", "ಹಾಸಿಗೆ", "ଶଯ୍ୟା"],
+                      "बिस्तर", "पलंग", "படுக்கை", "ಹಾಸಿಗೆ", "ଶଯ୍ୟା",
+                  "বেড", "শয্যা", "বিছানা", "বিচনা", "పడక", "पलंग", "खाट", "ખાટલા", "પથારી", "കിടക്ക", "ਬਿਸਤਰ", "ਬੈੱਡ", "بستر", "بسترا", "ٻستر", "बेड", "ओछ्यान", "शय्या"],
     "staff_present": ["staff", "stf", "present", "attendance", "karmachari",
-                      "स्टाफ", "कर्मचारी", "ஊழியர்", "ಸಿಬ್ಬಂದಿ", "କର୍ମଚାରୀ"],
+                      "स्टाफ", "कर्मचारी", "ஊழியர்", "ಸಿಬ್ಬಂದಿ", "କର୍ମଚାରୀ",
+                  "কর্মী", "কৰ্মচাৰী", "సిబ్బంది", "कर्मचारी", "કર્મચારી", "സ്റ്റാഫ്", "ജീവനക്കാർ", "ਸਟਾਫ਼", "ਸਟਾਫ", "عملہ", "اسٹاف", "عملو", "कर्मकर", "हाबसुलुगिरि"],
     "opd_count": ["opd", "patients", "patient", "footfall", "marij", "mareez",
-                  "ओपीडी", "मरीज़", "मरीज", "புறநோயாளி", "ಹೊರರೋಗಿ", "ରୋଗୀ", "ଓପିଡି"],
-    "fever_cases": ["fever", "bukhar", "jwar", "fvr", "बुखार", "காய்ச்சல்", "ಜ್ವರ", "ଜ୍ୱର"],
+                  "ओपीडी", "मरीज़", "मरीज", "புறநோயாளி", "ಹೊರರೋಗಿ", "ରୋଗୀ", "ଓପିଡି",
+                  "রোগী", "ৰোগী", "ওপিডি", "অ'পিডি", "రోగులు", "ఓపీడీ", "रुग्ण", "ओपीडी", "દર્દી", "ઓપીડી", "രോഗി", "ഒപി", "ਮਰੀਜ਼", "ਓਪੀਡੀ", "مریض", "او پی ڈی", "مريض", "बिरामी", "रोगी", "बेमारि"],
+    "fever_cases": ["fever", "bukhar", "jwar", "fvr", "बुखार", "காய்ச்சல்", "ಜ್ವರ", "ଜ୍ୱର",
+                  "জ্বর", "জ্বৰ", "జ్వరం", "ताप", "તાવ", "പനി", "ਬੁਖਾਰ", "ਬੁਖ਼ਾਰ", "بخار", "تاپ", "ज्वरो", "ज्वर", "बुखार", "जर"],
     "diarrhoea_cases": ["diarrhoea", "diarrhea", "loose motion", "dast", "dia", "दस्त",
-                        "வயிற்றுப்போக்கு", "ಅತಿಸಾರ", "ଝାଡ଼ା"],
+                        "வயிற்றுப்போக்கு", "ಅತಿಸಾರ", "ଝାଡ଼ା",
+                  "ডায়রিয়া", "পাতলা পায়খানা", "পেটের অসুখ", "విరేచనాలు", "जुलाब", "अतिसार", "ઝાડા", "വയറിളക്കം", "ਦਸਤ", "دست", "पखाला", "झाड़ा"],
     "respiratory_cases": ["cough", "respiratory", "khansi", "resp", "breathing", "खांसी",
-                          "இருமல்", "ಕೆಮ್ಮು", "କାଶ"],
+                          "இருமல்", "ಕೆಮ್ಮು", "କାଶ",
+                  "কাশি", "কাহ", "దగ్గు", "खोकला", "ખાંસી", "ചുമ", "ਖੰਘ", "کھانسی", "کھنگھ", "खोकी", "खोंखी", "कास"],
 }
 
 
 # Stock removed from the shelf without being dispensed (expired, damaged). Recorded as an
 # adjustment so it does not count as patient demand in the forecast.
 _DISCARD_WORDS = (r"\b(?:expired?|expiry|exp|damaged?|dmg|discard(?:ed)?|wasted?|broken|"
-                  r"kharab|nasht|barbaad)\b|खराब|नष्ट|एक्सपायर|காலாவதி|சேதம்|ಹಾಳಾದ|ಅವಧಿ ಮೀರಿದ|ନଷ୍ଟ")
+                  r"kharab|nasht|barbaad)\b|खराब|नष्ट|एक्सपायर|காலாவதி|சேதம்|ಹಾಳಾದ|ಅವಧಿ ಮೀರಿದ|ନଷ୍ଟ|মেয়াদোত্তীর্ণ|নষ্ট|గడువు ముగిసిన|పాడైన|कालबाह्य|ખરાબ|કાલાતીત|കാലാവധി കഴിഞ്ഞ|ਖ਼ਰਾਬ|ਮਿਆਦ ਪੁੱਗ|خراب|میعاد ختم|बिग्रिएको")
 DISCARD = re.compile(_DISCARD_WORDS)
 TRAILING_DISCARD = re.compile(r"^\s*(?:[a-z]+\s+)?(?:" + _DISCARD_WORDS + ")")  # "5 [strips] expired"
-RECEIVED = re.compile(r"receiv|\bmila|मिला|मिले")
+RECEIVED = re.compile(r"receiv|\bmila|मिला|मिले|পেয়েছি|পাইছো|వచ్చింది|मिळाले|મળ્યું|കിട്ടി|ਮਿਲਿਆ|ملا|ملیو|पाइयो|भेटल")
 
 
 def _drug_keys(d):
@@ -62,13 +68,20 @@ def _normalise_numbers(text: str) -> str:
     return re.sub(pattern, repl, text, flags=re.I)
 
 
+# Browser speech-to-text often returns native digits (১৫০, १५०, ۱۵۰): map every Indian script's
+# digits, plus Arabic-Indic and Ol Chiki / Meetei Mayek, to ASCII before looking for numbers.
+_DIGIT_BASES = (0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66,
+                0x0660, 0x06F0, 0x1C50, 0xABF0)
+_DIGITS = {base + i: str(i) for base in _DIGIT_BASES for i in range(10)}
+
+
 def parse(text: str) -> dict:
-    t = _normalise_numbers(text.lower())
+    t = _normalise_numbers(text.translate(_DIGITS).lower())
     t = re.sub(r"(\d),(\d)", r"\1\2", t)
     tokens = [(m.start(), m.end(), float(m.group())) for m in re.finditer(r"\d+(?:\.\d+)?", t)]
     used = set()
     # Clause boundaries: a keyword only binds to a number in the same clause.
-    bounds = [m.start() for m in re.finditer(r"[,;।|\n]|\.(?=\s|$)", t)]
+    bounds = [m.start() for m in re.finditer(r"[,;।॥|\n،؛۔]|\.(?=\s|$)", t)]
 
     def clause(pos):
         return sum(1 for b in bounds if b < pos)

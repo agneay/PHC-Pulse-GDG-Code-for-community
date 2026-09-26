@@ -91,7 +91,7 @@ export default function Phone() {
         </div>
       </div>
 
-      <div className="grid g-3">
+      <div className="grid g-3" data-tour="phone">
         <Card title="USSD *123#" icon="phone" hint={t('phone.ussdHint')}>
           <div className="phone">
             <div className="scr" lang="en">

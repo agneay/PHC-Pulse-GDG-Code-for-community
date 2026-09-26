@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { useApp } from '../App'
 import { useI18n } from '../i18n'
 import { ttsAudio } from '../lib/api'
+import { SPEECH } from '../lib/speech'
 import { speak } from '../lib/wav'
 import Icon from './Icon'
 
@@ -12,10 +13,16 @@ export function useSpeak() {
   const { t } = useI18n()
   return useCallback(async (text, language) => {
     const bcp = meta.languages[language]?.bcp47 || 'en-IN'
+    const near = SPEECH[language]?.voice
     try {
-      return await speak(text, bcp, {
+      const how = await speak(text, bcp, {
         fetchAudio: meta.gemini.enabled ? (x) => ttsAudio(x, language) : null,
+        nearBcp47: near && meta.languages[near]?.bcp47,
       })
+      if (how === 'near') {
+        notify(t('speech.nearVoice', { language: meta.languages[language].native, near: meta.languages[near].native }))
+      }
+      return how
     } catch (e) {
       const reason = e.code === 'no-voice' ? t('speech.noVoice') : e.message
       notify(t('speech.unavailable', { language: meta.languages[language]?.native || language, reason }))

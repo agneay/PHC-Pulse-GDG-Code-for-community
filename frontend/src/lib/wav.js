@@ -62,23 +62,33 @@ export function stopSpeaking() {
   if (playing) { playing.pause(); playing = null }
 }
 
-/** Speak `text` in `bcp47` (e.g. "ta-IN"). Resolves to 'device' or 'gemini'; rejects with a
- *  readable message when neither a device voice nor server read-aloud is available. */
-export async function speak(text, bcp47, { fetchAudio } = {}) {
+/** Speak `text` in `bcp47` (e.g. "ta-IN"). Order: a device voice for the language, then Gemini
+ *  read-aloud, then a device voice for `nearBcp47` (a language sharing the script, e.g. Hindi for
+ *  Maithili). Resolves to 'device' | 'gemini' | 'near'; rejects when none of them is available. */
+export async function speak(text, bcp47, { fetchAudio, nearBcp47 } = {}) {
   if (!text) return null
   stopSpeaking()
-  const voice = voiceFor(await deviceVoices(), bcp47)
-  if (voice) {
+  const voices = await deviceVoices()
+  const say = (voice) => {
     const u = new SpeechSynthesisUtterance(text)
     u.lang = voice.lang; u.voice = voice; u.rate = 0.95
     speechSynthesis.speak(u)
-    return 'device'
   }
-  if (!fetchAudio) throw Object.assign(new Error(`No voice for ${bcp47} on this device`), { code: 'no-voice' })
-  const url = URL.createObjectURL(await fetchAudio(text))
-  const audio = new Audio(url)
-  audio.onended = () => URL.revokeObjectURL(url)
-  playing = audio
-  await audio.play()
-  return 'gemini'
+  const own = voiceFor(voices, bcp47)
+  if (own) { say(own); return 'device' }
+  const near = nearBcp47 && voiceFor(voices, nearBcp47)
+  if (fetchAudio) {
+    try {
+      const url = URL.createObjectURL(await fetchAudio(text))
+      const audio = new Audio(url)
+      audio.onended = () => URL.revokeObjectURL(url)
+      playing = audio
+      await audio.play()
+      return 'gemini'
+    } catch (e) {
+      if (!near) throw e
+    }
+  }
+  if (near) { say(near); return 'near' }
+  throw Object.assign(new Error(`No voice for ${bcp47} on this device`), { code: 'no-voice' })
 }
