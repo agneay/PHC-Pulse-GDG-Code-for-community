@@ -154,6 +154,10 @@ names are real; PHC coordinates are jittered. No patient-level data is stored an
 3. **Cross-state redistribution:** already a toggle in the optimiser.
 4. **Resource generalisation:** blood banks, oxygen and ambulances with the same forecast + MILP engine.
 
+## Watch Demo on YouTube
+
+[![Watch the Demo](https://img.youtube.com/vi/OK-mlieQLTc/maxresdefault.jpg)](https://youtu.be/OK-mlieQLTc)
+
 ## Credits and open-source components
 
 Built during the hackathon on these open-source projects (licences in brackets):
