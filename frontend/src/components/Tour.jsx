@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useApp } from '../App'
 import { useI18n } from '../i18n'
 import { rich } from '../lib/format'
 import Icon from './Icon'
@@ -16,12 +17,14 @@ export const TOUR_STEPS = [
   { id: 'kpis', route: '/', target: 'kpis' },
   { id: 'map', route: '/', target: 'map' },
   { id: 'briefing', route: '/', target: 'briefing' },
+  { id: 'impact', route: '/', target: 'impact', officers: true },
   { id: 'ask', target: 'ask' },
   { id: 'stock', route: '/stock', target: 'stock-matrix' },
   { id: 'warnings', route: '/stock', target: 'stock-warnings' },
   { id: 'redis', route: '/redistribution', target: 'redis-recs' },
   { id: 'tracker', route: '/redistribution', target: 'redis-tracker' },
   { id: 'outbreaks', route: '/outbreaks', target: 'outbreaks' },
+  { id: 'emergency', route: '/emergency', target: 'emergency', officers: true },
   { id: 'voiceWho', route: '/report', target: 'voice-who' },
   { id: 'voiceSpeak', route: '/report', target: 'voice-speak' },
   { id: 'phone', route: '/phone', target: 'phone' },
@@ -64,6 +67,8 @@ function findBox(target) {
 
 export default function Tour({ onClose }) {
   const { t, lang, rtl } = useI18n()
+  const { meta } = useApp()
+  const steps = TOUR_STEPS.filter((s) => !s.officers || meta.user.role !== 'phc')
   const navigate = useNavigate()
   const loc = useLocation()
   const [i, setI] = useState(0)
@@ -72,11 +77,11 @@ export default function Tour({ onClose }) {
   const card = useRef(null)
   const next = useRef(null)
   const [cardH, setCardH] = useState(220)
-  const step = TOUR_STEPS[i]
-  const last = i === TOUR_STEPS.length - 1
+  const step = steps[i]
+  const last = i === steps.length - 1
 
   const close = useCallback(() => { markDone(); onClose() }, [onClose])
-  const go = useCallback((d) => setI((n) => Math.max(0, Math.min(TOUR_STEPS.length - 1, n + d))), [])
+  const go = useCallback((d) => setI((n) => Math.max(0, Math.min(steps.length - 1, n + d))), [])
 
   // Open the step's page, wait for its anchor to render (pages load data first), then scroll it
   // into view. Falls back to a centred card after ~4 s so the tour never gets stuck.
@@ -157,7 +162,7 @@ export default function Tour({ onClose }) {
       <div ref={card} className="tour-card" role="dialog" aria-modal="true" aria-label={t('tour.label')} tabIndex={-1}
         style={{ top: pos.top, left: pos.left, width: W, visibility: ready ? 'visible' : 'hidden' }}>
         <div className="row" style={{ justifyContent: 'space-between' }}>
-          <span className="eyebrow">{t('tour.step', { n: i + 1, total: TOUR_STEPS.length })}</span>
+          <span className="eyebrow">{t('tour.step', { n: i + 1, total: steps.length })}</span>
           <div className="row" style={{ gap: 2 }}>
             <SpeakButton text={`${title}. ${body.replaceAll('**', '')}`} language={lang} />
             <button className="btn ghost sm" onClick={close} aria-label={t('tour.skip')} title={t('tour.skip')}><Icon name="x" size={15} /></button>
@@ -166,7 +171,7 @@ export default function Tour({ onClose }) {
         <h3>{title}</h3>
         <p>{rich(body)}</p>
         <div className="tour-dots" aria-hidden="true">
-          {TOUR_STEPS.map((s, k) => <span key={s.id} className={k === i ? 'on' : k < i ? 'seen' : ''} />)}
+          {steps.map((s, k) => <span key={s.id} className={k === i ? 'on' : k < i ? 'seen' : ''} />)}
         </div>
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <button className="linkish small" onClick={close}>{t('tour.skip')}</button>

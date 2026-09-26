@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 ALPHA, BETA, GAMMA, PHI = 0.25, 0.04, 0.15, 0.90
+DEFAULT_PARAMS = {"alpha": ALPHA, "beta": BETA, "gamma": GAMMA, "phi": PHI}
 PERIOD = 7
 
 
@@ -24,6 +25,7 @@ class HWResult:
     season: np.ndarray     # (S, T, 7) seasonal factors after day t
     yhat: np.ndarray       # (S, T) one-step-ahead prediction made for day t
     resid: np.ndarray      # (S, T) y - yhat (NaN where y missing)
+    phi: float = PHI
 
     def forecast(self, t: np.ndarray, horizon: int) -> np.ndarray:
         """Forecast days t+1..t+horizon from the state at per-series index t. -> (S, horizon)"""
@@ -32,7 +34,7 @@ class HWResult:
         lvl, tr = self.level[rows, t], self.trend[rows, t]
         seas = self.season[rows, t]                                  # (S, 7)
         h = np.arange(1, horizon + 1)
-        damp = np.cumsum(PHI ** h)                                   # sum_{k<=h} phi^k
+        damp = np.cumsum(self.phi ** h)                                   # sum_{k<=h} phi^k
         base = lvl[:, None] + damp[None, :] * tr[:, None]
         idx = (t[:, None] + h[None, :]) % PERIOD
         return np.clip(base * np.take_along_axis(seas, idx, axis=1), 0, None)
@@ -48,38 +50,47 @@ class HWResult:
         return out
 
 
-def fit(y: np.ndarray) -> HWResult:
+def fit(y: np.ndarray, params: dict = None, season0: np.ndarray = None) -> HWResult:
     """y: (S, T) daily demand, NaN = not reported. Day index t must align with calendar so
-    that t % 7 is a fixed weekday across series."""
+    that t % 7 is a fixed weekday across series.
+    params: smoothing constants (alpha, beta, gamma, phi); defaults to the tuned national values.
+    season0: (S, 7) starting weekday factors, e.g. a shared prior from other states, used instead
+    of estimating them from the first two weeks (which is noisy when a PHC has little history)."""
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    a_, b_, g_, phi = p["alpha"], p["beta"], p["gamma"], p["phi"]
     S, T = y.shape
-    y0 = np.nan_to_num(y[:, :14], nan=np.nanmean(y[:, :14]) if np.isfinite(y[:, :14]).any() else 0)
+    w0 = min(14, T)
+    y0 = np.nan_to_num(y[:, :w0], nan=np.nanmean(y[:, :w0]) if np.isfinite(y[:, :w0]).any() else 0)
     lvl = np.maximum(y0.mean(axis=1), 0.05)
     tr = np.zeros(S)
-    season = np.ones((S, PERIOD))
-    for k in range(PERIOD):
-        season[:, k] = np.maximum(y0[:, k::PERIOD].mean(axis=1) / lvl, 0.05)
+    if season0 is not None:
+        season = np.array(season0, dtype=float, copy=True)
+    else:
+        season = np.ones((S, PERIOD))
+        for k in range(PERIOD):
+            season[:, k] = np.maximum(y0[:, k::PERIOD].mean(axis=1) / lvl, 0.05)
     season /= season.mean(axis=1, keepdims=True)
 
     L = np.empty((S, T)); B = np.empty((S, T)); SE = np.empty((S, T, PERIOD))
     YH = np.empty((S, T)); R = np.full((S, T), np.nan)
     for t in range(T):
         k = t % PERIOD
-        pred_l = lvl + PHI * tr
+        pred_l = lvl + phi * tr
         yhat = np.maximum(pred_l * season[:, k], 0)
         yt = y[:, t]
         obs = ~np.isnan(yt)
         yo = np.where(obs, yt, 0.0)
-        new_l = ALPHA * (yo / season[:, k]) + (1 - ALPHA) * pred_l
+        new_l = a_ * (yo / season[:, k]) + (1 - a_) * pred_l
         new_l = np.maximum(new_l, 0.01)
-        new_b = BETA * (new_l - lvl) + (1 - BETA) * PHI * tr
-        new_s = GAMMA * (yo / new_l) + (1 - GAMMA) * season[:, k]
+        new_b = b_ * (new_l - lvl) + (1 - b_) * phi * tr
+        new_s = g_ * (yo / new_l) + (1 - g_) * season[:, k]
         lvl = np.where(obs, new_l, pred_l)
-        tr = np.where(obs, new_b, PHI * tr)
+        tr = np.where(obs, new_b, phi * tr)
         season[:, k] = np.where(obs, np.clip(new_s, 0.05, 5), season[:, k])
         L[:, t], B[:, t], SE[:, t] = lvl, tr, season
         YH[:, t] = yhat
         R[obs, t] = yt[obs] - yhat[obs]
-    return HWResult(L, B, SE, YH, R)
+    return HWResult(L, B, SE, YH, R, phi)
 
 
 def days_until_cumulative(forecast: np.ndarray, stock: np.ndarray) -> np.ndarray:

@@ -10,7 +10,7 @@ import numpy as np
 from . import anomaly, config, forecasting, redistribution
 from .db import get_conn, rows
 from .geo import distance_matrix_km
-from .reference import DRUGS
+from .reference import DRUG_BY_CODE, DRUGS, LIFE_SAVING
 
 DRUG_CODES = [d["code"] for d in DRUGS]
 SYNDROME_DRUGS = {"fever": ["PCM", "ACT"], "diarrhoea": ["ORS", "ZNC"], "respiratory": ["AMX"]}
@@ -52,7 +52,10 @@ def load():
     return phcs, districts, states, stock, foot, transfers
 
 
-def compute(allow_cross_state: bool = False) -> dict:
+def compute(allow_cross_state: bool = False, scenario: dict = None) -> dict:
+    """scenario (emergency simulator): {"phc_ids": set, "drug_mult": {code: x}, "duration": days}
+    scales forecast demand at those PHCs for `duration` days (fading out over the next week),
+    then re-runs early warning and redistribution. The stored data is never changed."""
     t0 = time.perf_counter()
     phcs, districts, states, stock_rows, foot_rows, transfers = load()
     today = config.TODAY
@@ -115,6 +118,14 @@ def compute(allow_cross_state: bool = False) -> dict:
                 surge[s], surge_reason[s] = f, f"{a['syndrome']} anomaly (x{a['ratio']})"
     decay = np.clip(1 - (np.arange(H) - 14) / 14, 0, 1)            # hold 14 days, fade by day 28
     fc_adj = fc * (1 + (surge[:, None] - 1) * decay[None, :])
+    if scenario:
+        ramp = np.clip(1 - (np.arange(H) - scenario["duration"]) / 7, 0, 1)
+        mult = np.ones(S)
+        for pid in scenario["phc_ids"]:
+            if pid in pidx:
+                for code, m in scenario["drug_mult"].items():
+                    mult[pidx[pid] * D + didx[code]] = m
+        fc_adj = fc_adj * (1 + (mult[:, None] - 1) * ramp[None, :])
 
     # ---- pipeline from transfers -----------------------------------------------------------
     incoming = np.zeros(S)          # approved / in transit, not yet received
@@ -171,11 +182,14 @@ def compute(allow_cross_state: bool = False) -> dict:
             need = float(np.ceil(fc_adj[s, :horizon].sum() - max(avail[s], 0)))
             if need >= 1:
                 deficits.append({"phc_idx": i, "drug": DRUG_CODES[j], "need": need,
-                                 "days_to_stockout": int(max(dts[s], 0))})
+                                 "days_to_stockout": int(max(dts[s], 0)),
+                                 # days the shelf would stand empty before the next delivery
+                                 "gap_days": float(max(0.0, min(supply_in[s], H) - max(dts[s], 0)))})
         elif status[s] == "surplus":
             donors.append({"phc_idx": i, "drug": DRUG_CODES[j],
                            "surplus": float(np.floor(surplus_units[s]))})
     plan = redistribution.optimise(deficits, donors, phcs, road, allow_cross_state)
+    impact = _impact(plan, deficits, phcs)
 
     # ---- per-PHC summaries & resilience score -----------------------------------------------
     anoms_by_phc = {}
@@ -236,7 +250,8 @@ def compute(allow_cross_state: bool = False) -> dict:
     for i, a in enumerate(anchors):
         sup = np.array([_next_supply_days(a, d) for d in days], dtype=float)
         supply_days_hist[i * D:(i + 1) * D] = sup
-    bt = forecasting.backtest(y, np.nan_to_num(close2, nan=1e9), hw, supply_days_hist, T - 2)
+    bt = None if scenario else forecasting.backtest(y, np.nan_to_num(close2, nan=1e9), hw,
+                                                        supply_days_hist, T - 2)
 
     return {
         "computed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -245,12 +260,64 @@ def compute(allow_cross_state: bool = False) -> dict:
         "phcs": phc_summ, "items": items, "districts": districts, "states": states,
         "anomalies": anom["anomalies"], "clusters": anom["clusters"],
         "plan": _decorate_plan(plan, phcs), "backtest": bt, "allow_cross_state": allow_cross_state,
+        "impact": impact,
         "_arrays": {"demand": demand, "closing": closing, "fc": fc_adj.reshape(N, D, H),
                     "sigma": sigma.reshape(N, D), "foot": foot, "wday": wday,
                     "wf": anom["weekday_factors"], "last_foot_t": last_foot_t,
                     "last_demand_t": last_demand_t.reshape(N, D),
                     "last_stock_t": last_stock_t.reshape(N, D), "pidx": pidx, "didx": didx},
     }
+
+
+def _impact(plan: dict, deficits: list, phcs: list) -> dict:
+    """What the current transfer plan achieves, in terms a ministry can weigh. Prices and
+    emergency-procurement costs are indicative assumptions (see reference.py / config.py)."""
+    by_key = {(d["phc_idx"], d["drug"]): d for d in deficits}
+    prevented, units, value, lifesaving, patients = 0.0, 0.0, 0.0, 0, 0.0
+    lines = 0
+    for sh in plan["shipments"]:
+        for ln in sh["lines"]:
+            d = by_key.get((sh["to_idx"], ln["drug_code"]))
+            if d is None:
+                continue
+            frac = min(1.0, ln["qty"] / max(d["need"], 1e-9))
+            # Kept on the line so any jurisdiction's impact is a sum over its own transfers.
+            ln["prevented_days"] = d["gap_days"] * frac
+            prevented += ln["prevented_days"]
+            units += ln["qty"]
+            value += ln["qty"] * DRUG_BY_CODE[ln["drug_code"]]["price_inr"]
+            patients += ln["qty"] / DRUG_BY_CODE[ln["drug_code"]]["units_per_patient"]
+            lifesaving += ln["drug_code"] in LIFE_SAVING
+            lines += 1
+    transport = float(sum(s["cost_inr"] for s in plan["shipments"]))
+    return impact_summary(prevented, units, value, patients, lifesaving, lines, transport, len(phcs))
+
+
+def impact_summary(prevented, units, value, patients, lifesaving, lines, transport, n_phcs) -> dict:
+    # Without a transfer each line becomes an emergency indent or local purchase at a premium.
+    emergency = value * config.EMERGENCY_PREMIUM + lines * config.EMERGENCY_INDENT_COST
+    n = n_phcs or 1
+    return {"stockout_days_prevented": round(prevented), "units_moved": round(units),
+            "patients_covered": round(patients), "medicine_value_inr": round(value),
+            "transport_cost_inr": round(transport), "emergency_cost_avoided_inr": round(emergency),
+            "net_saving_inr": round(emergency - transport), "lifesaving_lines": lifesaving,
+            "phcs": n_phcs,
+            "national_projection": {  # linear scale-up per monthly supply cycle, clearly an estimate
+                "phcs": config.INDIA_PHCS,
+                "stockout_days_prevented": round(prevented / n * config.INDIA_PHCS),
+                "patients_covered": round(patients / n * config.INDIA_PHCS),
+                "net_saving_inr": round((emergency - transport) / n * config.INDIA_PHCS)}}
+
+
+def impact_for(shipments: list, n_phcs: int) -> dict:
+    """Impact of a subset of the plan (e.g. one district's transfers)."""
+    lines = [ln for s in shipments for ln in s["lines"] if "prevented_days" in ln]
+    return impact_summary(
+        sum(ln["prevented_days"] for ln in lines), sum(ln["qty"] for ln in lines),
+        sum(ln["qty"] * DRUG_BY_CODE[ln["drug_code"]]["price_inr"] for ln in lines),
+        sum(ln["qty"] / DRUG_BY_CODE[ln["drug_code"]]["units_per_patient"] for ln in lines),
+        sum(ln["drug_code"] in LIFE_SAVING for ln in lines), len(lines),
+        float(sum(s["cost_inr"] for s in shipments)), n_phcs)
 
 
 def _decorate_plan(plan: dict, phcs: list) -> dict:

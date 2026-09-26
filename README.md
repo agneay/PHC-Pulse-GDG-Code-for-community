@@ -22,6 +22,13 @@
 | **Outbreak anomaly detection** | Weekday-adjusted robust z-scores on fever / diarrhoea / respiratory footfall; ≥ 2 PHCs within 50 km → cluster. Detects the seeded Koraput diarrhoea and Gorakhpur fever clusters. **Gemini drafts the IDSP alert** in English + the local language. Linked drugs (ORS/zinc, paracetamol/ACT) get outbreak-adjusted forecasts. |
 | **District / State / National dashboards** | `Command centre` with map, KPIs, resilience scores, district roll-up, **Gemini daily briefing** in any of the 23 languages and an **Ask Pulse** copilot grounded in the live snapshot. |
 | **Row-level access by jurisdiction** | Signed role tokens: national, state, district (DHO) and PHC personas. Every API filters rows by scope and a DHO cannot widen it (mirrors BigQuery row access policies in `bigquery/schema.sql`). Only the donor side (its DHO, state or national) can release stock; tokens expire after a 12-hour shift. |
+| **Health-emergency simulator** | `Emergency simulator` page: pick a flood, cyclone, dengue/malaria, cholera or heatwave scenario, districts and severity. The engine re-runs forecasts and the MILP on the what-if demand and shows new stock-out risks (life-saving drugs first), bed pressure, transfers to make in advance and emergency indents; **Gemini writes a 48-hour action plan** in any of 23 languages. Nothing is saved. |
+| **Shared predictive modelling across states (federated)** | Each state tunes its own forecaster on its own data; only 85 numbers per state (settings, weekday patterns, demand per 100 OPD) are pooled with **FedAvg** into a national prior. Leave-one-state-out test: a newly onboarded state with 7 days of history forecasts at **65% vs 56%** accuracy with the shared prior; a PHC with no history at all gets 64% from its OPD alone. Raw rows shared: 0. |
+| **Ask Pulse agent (Gemini function calling)** | Gemini calls scoped tools (stock, surplus nearby, recommended transfers, outbreak signals, emergency simulation, impact) and can **propose** a transfer; the officer confirms with a button and the normal approval rules apply. |
+| **Photo of a paper register** | `Voice report` → Photo: Gemini reads a photographed stock register or daily sheet (handwritten, any script) into the same checked report as voice. |
+| **Impact** | Stock-out days prevented, patients covered and money saved vs emergency purchase for the current plan, per jurisdiction, with a clearly labelled national projection. |
+| **National scale** | `scripts/scale_benchmark.py`: 24,937 PHCs in 36 states/UTs (249,370 series) through forecasting, early warning, outbreak detection and the MILP in ~33 s on one machine; ~8 s for the largest state, so ~10 s nationally with one worker per state. |
+| **DHIS2 / HMIS integration** | `GET /api/dhis2/dataValueSets` (DHIS2 import format, org units by HMIS NIN) + `/api/dhis2/metadata`; see [docs/DEPLOYMENT_PLAYBOOK.md](docs/DEPLOYMENT_PLAYBOOK.md) for the pilot plan, costs and DPDP notes. |
 | **Easy for first-time users** | `Help` → **Take the guided tour**: an 18-step interactive walkthrough of every page (spotlight on each feature, auto-navigates, keyboard + read-aloud, works on phones and right-to-left scripts), in all fully translated languages. First-time visitors get a one-time invitation. |
 | **HMIS-compatible** | Facilities keyed by HMIS NIN; monthly HMIS-style CSV export (OPD, syndromic counts, receipts, consumption, closing balance, stock-out days). |
 | **Scales state by state** | Engine decomposes the MILP per state (cross-state lanes are a Phase-3 toggle); BigQuery schema is partitioned by day and clustered by state; BQML / Vertex AI training scripts included. |
@@ -54,7 +61,11 @@ backend/app/
   anomaly.py         robust weekday-adjusted z-scores + spatial clustering
   redistribution.py  MILP (scipy.optimize.milp / HiGHS) with lane consolidation
   engine.py          loads warehouse → forecasts → early warning → plan → cached read model
-  gemini.py          voice-report understanding, briefings, copilot, outbreak alerts (+ fallbacks)
+  gemini.py          voice/photo report understanding, briefings, emergency plans, alerts, read-aloud (+ fallbacks)
+  agent.py           Ask Pulse agent: scoped tools for Gemini function calling
+  federated.py       per-state training, FedAvg prior, leave-one-state-out evaluation
+  scenarios.py       health-emergency simulator (what-if demand -> forecasts + MILP)
+  dhis2.py           DHIS2 dataValueSets export + metadata
   channels.py        USSD state machine, SMS grammar, Dialogflow CX webhook
   service.py         report ingestion into the stock ledger, transfer lifecycle, scoping
   auth.py            signed persona tokens, row-level jurisdiction scoping
@@ -71,8 +82,11 @@ scripts/             Cloud Run deploy, BigQuery export
 * **Gemini** (`gemini-2.5-flash` by default, set `GEMINI_MODEL` to change it), via AI Studio key or Vertex AI:
   1. **Multimodal voice understanding:** 16 kHz WAV → transcript, translation and a schema-validated `ParsedReport` (response schema, so no free-text parsing). Hallucinated drug codes are dropped server-side. Follow-up answers are merged into the earlier partial report.
   2. **Daily briefing** for the officer's jurisdiction in their language.
-  3. **Ask Pulse** copilot: grounded Q&A over the live snapshot.
+  3. **Ask Pulse agent:** function calling over scoped tools; proposes transfers for the officer to confirm.
   4. **IDSP outbreak alert drafting** in English + the local language.
+  5. **Emergency action plans** from the simulator, in any of 23 languages.
+  6. **Photo understanding:** handwritten stock registers → structured reports.
+  7. **Read-aloud (Gemini TTS)** for languages the device has no voice for.
 * **Dialogflow CX:** IVR for feature phones (webhook implemented and tested).
 * **Cloud Run:** a single container serves API + UI.
 * **BigQuery / BigQuery ML / Vertex AI:** warehouse schema, row-level security, ARIMA_PLUS forecasting and anomaly detection, and an AutoML Forecasting training job, all scripted for the production path.
@@ -97,7 +111,7 @@ npm run dev                     # http://localhost:5173
 # or: npm run build and open http://localhost:8000 (FastAPI serves frontend/dist)
 ```
 
-Tests: `cd backend && python -m pytest -q` (93 tests, including the deck
+Tests: `cd backend && python -m pytest -q` (105 tests, including the deck
 scenario, row-level scoping, the transfer ledger, USSD/SMS/IVR and the Gemini path with a mocked model).
 
 ## Deploy to Cloud Run
@@ -121,7 +135,9 @@ store to BigQuery / Firestore; the engine only depends on the table shapes in `b
 3. Switch role to **DHO Tiruvannamalai** (row-level scope): the lane *"PHC-14 has surplus paracetamol; PHC-22 needs it in 9 days"* shows as awaiting the donor side, because PHC-14 is in Villupuram. Switch to **DHO Villupuram** (or **State Health Officer, Tamil Nadu**), then **Approve → Dispatch → Delivered**, and show that stock moved.
 4. **Voice report** for PHC-22 in Tamil: speak for about 20 s. Gemini returns the transcript, translation and fields, reads back in Tamil, and asks a follow-up. Submit, and the forecast updates.
 5. **USSD · SMS · IVR:** dial `*123#` on the feature phone, then send an SMS report and simulate a Hindi IVR call.
-6. **Models & HMIS:** 81% of stock-outs flagged ≥ 2 weeks ahead in backtest; HMIS CSV export; BigQuery / Vertex scripts.
+6. **Emergency simulator:** severe flood in Koraput → medicine lines at risk jump from 26 to 53, 23 advance transfers, 56 emergency indents; click **Write the plan** for Gemini's 48-hour plan (switch it to Odia).
+7. **Ask Pulse:** "What happens if a flood hits Koraput? What should we move in advance?" Watch the tool chips, then approve a proposed transfer from the chat.
+8. **Models & HMIS:** backtest, impact of today's plan with national projection, federated forecasting across states (65% vs 56% for a new state), national-scale benchmark, DHIS2 export.
 
 ## Data
 
@@ -137,3 +153,12 @@ names are real; PHC coordinates are jittered. No patient-level data is stored an
 2. **State rollout:** connect the state HMIS pipeline; add a language pack.
 3. **Cross-state redistribution:** already a toggle in the optimiser.
 4. **Resource generalisation:** blood banks, oxygen and ambulances with the same forecast + MILP engine.
+
+## Credits and open-source components
+
+Built during the hackathon on these open-source projects (licences in brackets):
+FastAPI, Pydantic (MIT) · Uvicorn, NumPy, SciPy (BSD-3-Clause) with the **HiGHS** MILP solver (MIT) ·
+python-multipart (Apache-2.0) · Google Gen AI SDK `google-genai` (Apache-2.0) · React, React Router,
+Recharts (MIT) · Leaflet (BSD-2-Clause) and react-leaflet (Hippocratic 2.1) · map tiles © OpenStreetMap
+contributors (ODbL) · Noto fonts via Google Fonts (SIL OFL 1.1). Facility counts: Rural Health
+Statistics 2021-22 (MoHFW). Drug list: National List of Essential Medicines.

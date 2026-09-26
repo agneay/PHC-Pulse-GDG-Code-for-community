@@ -102,6 +102,14 @@ _MORE_NAMES = {
     "brx": "पेरासिटामल|ओआरएस|जिंक|एमक्सिसिलिन|आइरन फलिक एसिड|मेटफरमिन|एमलडिपिन|मेलेरियानि मुलि (ACT)|जिबौनि बिस हेफाजाब|अक्सिटसिन",
     "sa": "पैरासिटामोल|ओआरएस|जिंक|एमोक्सिसिलिन|लौहफोलिकाम्लम्|मेटफॉर्मिन|एम्लोडिपिन|मलेरियौषधम् (ACT)|सर्पविषप्रतिकारकम्|ऑक्सीटोसिन",
 }
+# Indicative public-procurement price per unit (INR) and units per treated patient; used only
+# for impact estimates, never for clinical decisions.
+_ECON = {"PCM": (8, 1), "ORS": (4, 3), "ZNC": (12, 1.5), "AMX": (45, 1.5), "IFA": (4, 1),
+         "MET": (10, 3), "AML": (6, 3), "ACT": (70, 1), "ASV": (550, 10), "OXY": (12, 1)}
+for _d in DRUGS:
+    _d["price_inr"], _d["units_per_patient"] = _ECON[_d["code"]]
+LIFE_SAVING = {"ASV", "OXY", "ACT", "ORS"}
+
 for _lang, _names in _MORE_NAMES.items():
     for _d, _n in zip(DRUGS, _names.split("|"), strict=True):
         _d["names"][_lang] = _n

@@ -6,8 +6,10 @@ import Tour, { TourOffer } from './components/Tour'
 import { EngineTag, Loading } from './components/ui'
 import { FONT_STEPS, UI_LANGS, useI18n } from './i18n'
 import { api, ensureToken, qs, signIn } from './lib/api'
+import { drugLabel, fmt } from './lib/format'
 import { personaName } from './lib/labels'
 import Command from './pages/Command'
+import Emergency from './pages/Emergency'
 import ModelPage from './pages/Model'
 import Outbreaks from './pages/Outbreaks'
 import PhcDetail from './pages/PhcDetail'
@@ -82,6 +84,7 @@ export default function App() {
           <NavLink className="nav" to="/stock"><Icon name="pill" />{t('nav.stock')}</NavLink>
           <NavLink className="nav" to="/redistribution"><Icon name="truck" />{t('nav.redistribution')}</NavLink>
           <NavLink className="nav" to="/outbreaks"><Icon name="bug" />{t('nav.outbreaks')}</NavLink>
+          {meta.user.role !== 'phc' && <NavLink className="nav" to="/emergency"><Icon name="siren" />{t('nav.emergency')}</NavLink>}
           <div className="nav-sec">{t('nav.workers')}</div>
           <NavLink className="nav" to="/report"><Icon name="mic" />{t('nav.report')}</NavLink>
           <NavLink className="nav" to="/phone"><Icon name="phone" />{t('nav.phone')}</NavLink>
@@ -133,6 +136,7 @@ export default function App() {
               <Route path="/stock" element={<Stock />} />
               <Route path="/redistribution" element={<Redistribution />} />
               <Route path="/outbreaks" element={<Outbreaks />} />
+              <Route path="/emergency" element={<Emergency />} />
               <Route path="/report" element={<VoiceReport />} />
               <Route path="/phone" element={<Phone />} />
               <Route path="/model" element={<ModelPage />} />
@@ -205,12 +209,14 @@ function HelpMenu({ onTour }) {
 }
 
 function AskDrawer({ onClose }) {
-  const { scopeQs, meta } = useApp()
+  const { scopeQs, meta, refresh, notify } = useApp()
   const { t, lang } = useI18n()
   const [q, setQ] = useState('')
   const [msgs, setMsgs] = useState([])
   const [busy, setBusy] = useState(false)
-  const suggestions = [t('ask.s1'), t('ask.s2'), t('ask.s3'), t('ask.s4')]
+  const [done, setDone] = useState({})           // rec_id -> 'busy' | 'ok' | error message
+  const drug = Object.fromEntries(meta.drugs.map((d) => [d.code, d]))
+  const suggestions = [t('ask.s1'), t('ask.s5'), t('ask.s3'), t('ask.s4')]
   const send = async (text) => {
     const question = (text ?? q).trim()
     if (!question) return
@@ -219,10 +225,19 @@ function AskDrawer({ onClose }) {
     setBusy(true)
     try {
       const r = await api.post(`/api/ask${scopeQs}`, { question, language: lang })
-      setMsgs((m) => [...m, { role: 'a', text: r.answer, engine: r.engine }])
+      setMsgs((m) => [...m, { role: 'a', text: r.answer, engine: r.engine, steps: r.steps || [], actions: r.actions || [] }])
     } catch (e) {
       setMsgs((m) => [...m, { role: 'a', text: e.message }])
     } finally { setBusy(false) }
+  }
+  // The agent only proposes; the officer confirms here and the normal approval rules apply.
+  const approve = async (a) => {
+    setDone((d) => ({ ...d, [a.rec_id]: 'busy' }))
+    try {
+      await api.post(`/api/redistribution/${a.rec_id}/approve`)
+      setDone((d) => ({ ...d, [a.rec_id]: 'ok' }))
+      notify(t('ask.approved', { from: a.from, to: a.to })); refresh()
+    } catch (e) { setDone((d) => ({ ...d, [a.rec_id]: e.message })) }
   }
   return (
     <>
@@ -231,16 +246,37 @@ function AskDrawer({ onClose }) {
         <div className="dh">
           <Icon name="spark" /><b>{t('ask.title')}</b>
           <span className="pill ai">{meta.gemini.enabled ? meta.gemini.model : t('ask.off')}</span>
-          <button className="btn ghost sm" style={{ marginLeft: 'auto' }} onClick={onClose} aria-label={t('common.close')}><Icon name="x" /></button>
+          <button className="btn ghost sm" style={{ marginInlineStart: 'auto' }} onClick={onClose} aria-label={t('common.close')}><Icon name="x" /></button>
         </div>
         <div className="db">
           {!msgs.length && (
             <div className="stack">
               <div className="muted small">{t('ask.intro')}</div>
-              {suggestions.map((s) => <button key={s} className="btn" style={{ whiteSpace: 'normal', textAlign: 'left' }} onClick={() => send(s)}>{s}</button>)}
+              <div className="muted small">{t('ask.agentNote')}</div>
+              {suggestions.map((s) => <button key={s} className="btn" style={{ whiteSpace: 'normal', textAlign: 'start' }} onClick={() => send(s)}>{s}</button>)}
             </div>
           )}
-          {msgs.map((m, i) => <div key={i} className={m.role === 'u' ? 'msg-u' : 'msg-a'}>{m.text}{m.engine && <div style={{ marginTop: 6 }}><EngineTag engine={m.engine} /></div>}</div>)}
+          {msgs.map((m, i) => (
+            <div key={i} className={m.role === 'u' ? 'msg-u' : 'msg-a'}>
+              {!!m.steps?.length && (
+                <div className="ask-steps" aria-label={t('ask.steps')}>
+                  <Icon name="tool" size={12} />{t('ask.steps')}
+                  {m.steps.map((s, k) => <span key={k} className="pill grey" title={JSON.stringify(s.args)}>{t(`ask.tool.${s.tool}`)}</span>)}
+                </div>
+              )}
+              {m.text}
+              {m.actions?.map((a) => (
+                <div key={a.rec_id} className="ask-action">
+                  <div className="small"><b>{a.from} → {a.to}</b>: {a.items.map((l) => `${fmt(l.qty)} ${drugLabel(drug[l.drug_code], lang)}`).join(', ')}</div>
+                  {done[a.rec_id] === 'ok' ? <span className="pill ok"><Icon name="check" size={12} />{t('ask.approved', { from: a.from, to: a.to })}</span>
+                    : <button className="btn primary sm" disabled={done[a.rec_id] === 'busy'} onClick={() => approve(a)}>
+                      <Icon name="check" size={14} />{t('ask.approve', { from: a.from, to: a.to })}</button>}
+                  {done[a.rec_id] && !['ok', 'busy'].includes(done[a.rec_id]) && <div className="small" style={{ color: 'var(--red)' }}>{done[a.rec_id]}</div>}
+                </div>
+              ))}
+              {m.engine && <div style={{ marginTop: 6 }}><EngineTag engine={m.engine} /></div>}
+            </div>
+          ))}
           {busy && <div className="msg-a"><span className="spinner" /></div>}
         </div>
         <form className="df" onSubmit={(e) => { e.preventDefault(); send() }}>

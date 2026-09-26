@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import anomaly, auth, channels, config, engine, gemini, seed, service
+from . import agent, anomaly, auth, channels, config, dhis2, engine, federated, gemini, scenarios, seed, service
 from .db import get_conn, rows
 from .reference import DISTRICTS, DRUG_BY_CODE, DRUGS, LANGUAGES, STATES
 
@@ -93,7 +93,8 @@ def overview(scope: dict = Depends(scope_dep)):
             "computed_at": r["computed_at"], "compute_ms": r["compute_ms"],
             "kpis": service.kpis(sc), "phcs": sc["phcs"], "districts": list(rollup.values()),
             "clusters": sc["clusters"], "anomalies": sc["anomalies"][:20],
-            "shipments": sc["shipments"][:5], "backtest": r["backtest"]}
+            "shipments": sc["shipments"][:5], "backtest": r["backtest"],
+            "impact": engine.impact_for(sc["shipments"], len(sc["phcs"]))}
 
 
 @app.get("/api/stock")
@@ -296,6 +297,29 @@ async def report_voice(audio: UploadFile = File(...), phc_id: int = Form(...),
     return {**out, "warnings": service.check_report(phc_id, out["report"])}
 
 
+@app.post("/api/reports/photo")
+async def report_photo(image: UploadFile = File(...), phc_id: int = Form(...), language: str = Form("en"),
+                       user: dict = Depends(auth.require_user)):
+    """Photo of a paper stock / OPD register -> the same structured report as a voice report."""
+    phc = service.get_phc(phc_id)
+    if not phc:
+        raise HTTPException(404, "unknown PHC")
+    auth.require_phc_access(user, phc)
+    mime = (image.content_type or "image/jpeg").split(";")[0]
+    if not mime.startswith("image/"):
+        raise HTTPException(415, "send a photo (JPEG or PNG)")
+    data = await image.read()
+    if len(data) > 8_000_000:
+        raise HTTPException(413, "photo too large - under 8 MB please")
+    try:
+        out = gemini.parse_report(
+            phc=phc, district=service.DISTRICT_NAME[phc["district_code"]],
+            state=service.STATE_NAME[phc["state_code"]], language=language, image=data, image_mime=mime)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    return {**out, "warnings": service.check_report(phc_id, out["report"])}
+
+
 class TextReportIn(BaseModel):
     phc_id: int
     language: str = "en"
@@ -408,8 +432,10 @@ class AskIn(BaseModel):
 
 
 @app.post("/api/ask")
-def ask(body: AskIn, scope: dict = Depends(scope_dep)):
-    return gemini.ask(body.question[:2000], service.snapshot(result(), scope), body.language)
+def ask(body: AskIn, scope: dict = Depends(scope_dep), user: dict = Depends(auth.current_user)):
+    """Ask Pulse: Gemini with scoped tools (function calling). Proposed actions come back as
+    `actions` for the officer to confirm; nothing is changed here."""
+    return agent.ask(body.question[:2000], user, scope, body.language)
 
 
 class TtsIn(BaseModel):
@@ -455,11 +481,80 @@ def cluster_alert(cluster_id: str, body: AlertIn, user: dict = Depends(auth.requ
     return {"cluster": c, "language": lang, **gemini.outbreak_alert(payload, lang)}
 
 
+# ---------------------------------------------------------------- emergency simulator
+class ScenarioIn(BaseModel):
+    kind: str
+    districts: list[str]
+    severity: str = "severe"
+    duration: Optional[int] = None
+    cross_state: bool = False
+    language: str = "en"
+
+
+def _scenario(body: ScenarioIn, user: dict) -> dict:
+    if body.kind not in scenarios.PRESETS or body.severity not in scenarios.SEVERITY:
+        raise HTTPException(400, "unknown scenario or severity")
+    if body.duration is not None and not 3 <= body.duration <= 60:
+        raise HTTPException(400, "duration must be 3-60 days")
+    sc = user.get("scope", {})
+    known = {d["code"]: d for d in DISTRICTS}
+    bad = [d for d in body.districts if d not in known
+           or not auth.in_scope(sc, {"id": None, "district_code": d, "state_code": known[d]["state"]})
+           or sc.get("phc_id")]
+    if not body.districts or bad:
+        raise HTTPException(403 if bad else 400, "choose districts inside your jurisdiction")
+    visible = {p["id"] for p in result()["phcs"] if auth.in_scope(sc, p)}
+    return scenarios.run(body.kind, body.districts, body.severity, body.duration, body.cross_state, visible)
+
+
+@app.get("/api/scenarios")
+def scenario_presets(user: dict = Depends(auth.current_user)):
+    return {"presets": {k: {**v, "drugs": v["drugs"]} for k, v in scenarios.PRESETS.items()},
+            "severity": scenarios.SEVERITY}
+
+
+@app.post("/api/scenarios/run")
+def scenario_run(body: ScenarioIn, user: dict = Depends(auth.require_user)):
+    return _scenario(body, user)
+
+
+@app.post("/api/scenarios/plan")
+def scenario_plan(body: ScenarioIn, user: dict = Depends(auth.require_user)):
+    sim = _scenario(body, user)
+    audience = {"national": "national health ministry command centre", "state": "state health officer",
+                "district": "district health officer", "phc": "PHC medical officer"}[user["role"]]
+    return {"simulation": sim, **gemini.emergency_plan(sim, audience, body.language)}
+
+
+# ---------------------------------------------------------------- federated modelling / scale / impact
+@app.get("/api/federated")
+def federated_round(user: dict = Depends(auth.current_user)):
+    """Per-state local training, FedAvg prior, and the leave-one-state-out cold-start comparison."""
+    return federated.evaluate(result())
+
+
+@app.get("/api/impact")
+def impact(scope: dict = Depends(scope_dep)):
+    r = result()
+    sc = service.scoped(r, scope)
+    return engine.impact_for(sc["shipments"], len(sc["phcs"])) if scope else r["impact"]
+
+
+@app.get("/api/scale")
+def scale_benchmark():
+    """National-scale benchmark results (written by scripts/scale_benchmark.py), if present."""
+    path = config.BASE_DIR / "app" / "benchmarks" / "scale_benchmark.json"
+    if not path.exists():
+        raise HTTPException(404, "benchmark not run yet: python scripts/scale_benchmark.py")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 # ---------------------------------------------------------------- model card / HMIS
 @app.get("/api/model")
 def model():
     r = result()
     return {"backtest": r["backtest"], "plan_stats": r["plan"]["stats"], "compute_ms": r["compute_ms"],
+            "impact": r["impact"],
             "forecaster": {"name": "Damped Holt-Winters, multiplicative weekly seasonality",
                            "alpha": 0.25, "beta": 0.04, "gamma": 0.15, "phi": 0.9,
                            "series": len(r["items"]), "horizon_days": config.FORECAST_HORIZON,
@@ -477,18 +572,7 @@ def model():
 def hmis_export(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
     """Monthly facility report in an HMIS-style flat layout (one row per facility x item)."""
     month = month or config.TODAY.strftime("%Y-%m")
-    with get_conn() as conn:
-        stock = rows(conn, """SELECT p.id, p.nin, p.code, p.name, p.district_code, p.state_code, s.drug_code,
-              SUM(COALESCE(s.received,0)) AS received, SUM(COALESCE(s.dispensed,0)) AS dispensed,
-              SUM(CASE WHEN s.closing<=0 THEN 1 ELSE 0 END) AS stockout_days,
-              (SELECT closing FROM stock_daily s2 WHERE s2.phc_id=s.phc_id AND s2.drug_code=s.drug_code
-                 AND substr(s2.day,1,7)=? ORDER BY s2.day DESC LIMIT 1) AS closing
-            FROM stock_daily s JOIN phcs p ON p.id=s.phc_id WHERE substr(s.day,1,7)=?
-            GROUP BY s.phc_id, s.drug_code ORDER BY p.id""", (month, month))
-        foot = {r["code"]: r for r in rows(conn, """SELECT p.code, SUM(opd) AS opd, SUM(fever) AS fever,
-              SUM(diarrhoea) AS diarrhoea, SUM(respiratory) AS respiratory, COUNT(*) AS days_reported
-            FROM footfall_daily f JOIN phcs p ON p.id=f.phc_id WHERE substr(f.day,1,7)=?
-            GROUP BY p.code""", (month,))}
+    stock, foot = service.monthly_hmis(month)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["month", "state", "district", "facility_nin", "facility_code", "facility_name",
@@ -505,6 +589,20 @@ def hmis_export(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
                     s["stockout_days"]])
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename=phc_pulse_hmis_{month}.csv"})
+
+
+@app.get("/api/dhis2/metadata")
+def dhis2_metadata():
+    """Data elements + data set to import into DHIS2 once."""
+    return dhis2.metadata()
+
+
+@app.get("/api/dhis2/dataValueSets")
+def dhis2_values(month: Optional[str] = None, scope: dict = Depends(scope_dep)):
+    """Monthly facility report as a DHIS2 dataValueSets payload (codes: data elements, NIN: org units)."""
+    month = month or config.TODAY.strftime("%Y-%m")
+    return JSONResponse(dhis2.data_value_set(month, scope), headers={
+        "Content-Disposition": f"attachment; filename=phc_pulse_dhis2_{month}.json"})
 
 
 @app.post("/api/admin/reset")

@@ -88,6 +88,7 @@ export default function VoiceReport() {
   const followUp = useRef(false)
   const sttIdx = useRef(0)                    // which of sttCodes(language) the browser accepted
   const [sttNote, setSttNote] = useState('')
+  const [photo, setPhoto] = useState(null)     // { blob, url } of the register photo, downscaled
 
   const phc = phcs.data?.phcs.find((p) => p.id === phcId)
   useEffect(() => {   // requested PHC outside the user's jurisdiction -> make them pick one
@@ -118,6 +119,31 @@ export default function VoiceReport() {
   useEffect(() => { if (rec && secs >= MAX_SECONDS) stop() })   // hard cap: 60 s per report
 
   const reset = () => { setOut(null); setSaved(null); setErr(null); setLive(''); followUp.current = false; sttIdx.current = 0; setSttNote('') }
+
+  // Phone cameras produce 3-12 MB images; 1600 px JPEG keeps handwriting legible at ~300 KB,
+  // which matters on 2G/3G.
+  const pickPhoto = async (file) => {
+    if (!file) return
+    reset()
+    try {
+      const bmp = await createImageBitmap(file)
+      const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height))
+      const c = document.createElement('canvas')
+      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k)
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height)
+      const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85))
+      if (photo) URL.revokeObjectURL(photo.url)
+      setPhoto({ blob, url: URL.createObjectURL(blob) })
+    } catch { setPhoto({ blob: file, url: URL.createObjectURL(file) }) }
+  }
+  const readPhoto = async () => {
+    setBusy(true); setErr(null); setOut(null); setSaved(null)
+    try {
+      const fd = new FormData()
+      fd.append('image', photo.blob, 'register.jpg'); fd.append('phc_id', phcId); fd.append('language', language)
+      handleResult(await api.form('/api/reports/photo', fd))
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
 
   const handleResult = (r) => {
     setOut(r)
@@ -235,7 +261,7 @@ export default function VoiceReport() {
     setBusy(true); setErr(null)
     try {
       // Submitting while warnings are on screen means the worker has re-checked those numbers.
-      const r = await api.post('/api/reports/submit', { phc_id: phcId, language, channel: mode === 'voice' ? 'voice' : 'text', engine: out.engine, report: out.report, confirmed: warnings.length > 0 })
+      const r = await api.post('/api/reports/submit', { phc_id: phcId, language, channel: mode === 'text' ? 'text' : mode, engine: out.engine, report: out.report, confirmed: warnings.length > 0 })
       setSaved(r); refresh(); notify(t('voice.saved', { phc: r.phc }))
     } catch (e) {
       if (e.status === 409 && e.detail?.warnings) setOut((o) => ({ ...o, warnings: e.detail.warnings }))
@@ -296,8 +322,24 @@ export default function VoiceReport() {
 
         <Card tour="voice-speak" title={t('voice.step2')} icon="mic" right={<div className="lang-tabs">
           <button className={mode === 'voice' ? 'on' : ''} onClick={() => setMode('voice')}>{t('voice.modeVoice')}</button>
-          <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>{t('voice.modeType')}</button></div>}>
-          {mode === 'voice' ? (
+          <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>{t('voice.modeType')}</button>
+          <button className={mode === 'photo' ? 'on' : ''} onClick={() => setMode('photo')}><Icon name="camera" size={13} /> {t('voice.modePhoto')}</button></div>}>
+          {mode === 'photo' ? (
+            <div className="stack">
+              <div className="muted small">{t('voice.photoHint')}</div>
+              <label className={`btn ${photo ? '' : 'primary'}`} style={{ alignSelf: 'flex-start' }}>
+                <Icon name="camera" size={15} />{photo ? t('voice.photoRetake') : t('voice.photoPick')}
+                <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => pickPhoto(e.target.files?.[0])} />
+              </label>
+              {photo && <img src={photo.url} alt={t('voice.modePhoto')} className="photo-preview" />}
+              {photo && (
+                <button className="btn primary" style={{ alignSelf: 'flex-start' }} onClick={readPhoto} disabled={busy || !phcId || !gem}>
+                  {busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}{busy ? t('voice.understanding') : t('voice.photoRead')}</button>
+              )}
+              {!gem && <div className="note">{t('voice.photoNeedsGemini')}</div>}
+              {!phcId && <div className="note">{t('voice.pickPhcFirst')}</div>}
+            </div>
+          ) : mode === 'voice' ? (
             <div style={{ textAlign: 'center' }}>
               <button className={`mic ${rec ? 'rec' : ''}`} onClick={() => (rec ? stop() : start(false))} disabled={busy || !phcId || !voiceWorks}
                 aria-label={rec ? t('voice.stop') : t('voice.start')} aria-pressed={rec}>

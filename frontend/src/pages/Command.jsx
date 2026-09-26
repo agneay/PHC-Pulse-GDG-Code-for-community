@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
 import Briefing from '../components/Briefing'
 import Icon from '../components/Icon'
+import ImpactCard from '../components/Impact'
 import MapView from '../components/MapView'
 import { Card, ErrorBox, Kpi, Loading, useAsync } from '../components/ui'
 import { useI18n } from '../i18n'
@@ -107,6 +108,8 @@ export default function Command() {
           </div>
         </Card>
       </div>
+
+      {meta.user.role !== 'phc' && <ImpactCard impact={data.impact} />}
 
       <Card title={t('cmd.weakest')} icon="alert" bodyClass="table-wrap">
         <table className="t">

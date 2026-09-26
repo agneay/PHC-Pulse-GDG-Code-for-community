@@ -377,5 +377,23 @@ def snapshot(result: dict, scope: dict) -> dict:
     }
 
 
+def monthly_hmis(month: str):
+    """Monthly facility aggregates (HMIS layout): per PHC x drug stock movement, and per PHC
+    footfall. Shared by the HMIS CSV and the DHIS2 export."""
+    with get_conn() as conn:
+        stock = rows(conn, """SELECT p.id, p.nin, p.code, p.name, p.district_code, p.state_code, s.drug_code,
+              SUM(COALESCE(s.received,0)) AS received, SUM(COALESCE(s.dispensed,0)) AS dispensed,
+              SUM(CASE WHEN s.closing<=0 THEN 1 ELSE 0 END) AS stockout_days,
+              (SELECT closing FROM stock_daily s2 WHERE s2.phc_id=s.phc_id AND s2.drug_code=s.drug_code
+                 AND substr(s2.day,1,7)=? ORDER BY s2.day DESC LIMIT 1) AS closing
+            FROM stock_daily s JOIN phcs p ON p.id=s.phc_id WHERE substr(s.day,1,7)=?
+            GROUP BY s.phc_id, s.drug_code ORDER BY p.id""", (month, month))
+        foot = {r["code"]: r for r in rows(conn, """SELECT p.code, SUM(opd) AS opd, SUM(fever) AS fever,
+              SUM(diarrhoea) AS diarrhoea, SUM(respiratory) AS respiratory, COUNT(*) AS days_reported
+            FROM footfall_daily f JOIN phcs p ON p.id=f.phc_id WHERE substr(f.day,1,7)=?
+            GROUP BY p.code""", (month,))}
+    return stock, foot
+
+
 def drug_list():
     return [{k: d[k] for k in ("code", "name", "unit", "names", "aliases")} for d in DRUGS]

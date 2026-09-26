@@ -51,3 +51,8 @@ FIXED_TRIP_COST = 600.0        # INR fixed dispatch/handling cost per shipment
 CROSS_STATE_ADMIN_COST = 2500.0  # INR extra paperwork cost for inter-state transfer
 ROAD_FACTOR = 1.3              # road distance ~ haversine x 1.3
 AVG_SPEED_KMPH = 35.0
+
+# Impact estimates (indicative assumptions, shown as such in the UI and docs).
+EMERGENCY_PREMIUM = 0.5          # local emergency purchase costs ~50% over rate-contract price
+EMERGENCY_INDENT_COST = 1500.0   # INR vehicle + staff time for an urgent indent from the warehouse
+INDIA_PHCS = 24935               # functional PHCs in India (Rural Health Statistics 2021-22)

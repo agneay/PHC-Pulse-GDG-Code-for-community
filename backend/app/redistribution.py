@@ -19,6 +19,7 @@ import logging
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.sparse import coo_matrix
 
 from . import config
 
@@ -107,36 +108,38 @@ def _optimise(deficits: list, donors: list, phcs: list, road_km: np.ndarray,
         urgency = 1.0 + 14.0 / (1.0 + max(df["days_to_stockout"], 0))
         c[nx + ny + di] = SHORTAGE_PENALTY.get(df["drug"], 60) * urgency
 
-    A, lo, hi = [], [], []
-    # demand balance per deficit
+    # Sparse constraint matrix: each x appears in 3 rows, so this stays small at national scale.
+    ri, ci, vals, lo, hi = [], [], [], [], []
+    r = 0
+    # demand balance per deficit: sum_p x_pj + u_ij = need_ij
+    by_deficit = {}
+    for xi, (_, di, _) in enumerate(x_index):
+        by_deficit.setdefault(di, []).append(xi)
     for di, df in enumerate(deficits):
-        row = np.zeros(nx + ny + nu)
-        for xi, (_, d2, _) in enumerate(x_index):
-            if d2 == di:
-                row[xi] = 1
-        row[nx + ny + di] = 1
-        A.append(row); lo.append(df["need"]); hi.append(df["need"])
-    # donor capacity
-    for dn in donors:
-        row = np.zeros(nx + ny + nu)
-        used = False
-        for xi, (_, _, dnid) in enumerate(x_index):
-            if dnid == id(dn):
-                row[xi] = 1; used = True
-        if used:
-            A.append(row); lo.append(-np.inf); hi.append(dn["surplus"])
+        for xi in by_deficit.get(di, []):
+            ri.append(r); ci.append(xi); vals.append(1.0)
+        ri.append(r); ci.append(nx + ny + di); vals.append(1.0)
+        lo.append(df["need"]); hi.append(df["need"]); r += 1
+    # donor capacity: sum x <= surplus
+    by_donor = {}
+    for xi, (_, _, dnid) in enumerate(x_index):
+        by_donor.setdefault(dnid, []).append(xi)
+    for dnid, xs in by_donor.items():
+        for xi in xs:
+            ri.append(r); ci.append(xi); vals.append(1.0)
+        lo.append(-np.inf); hi.append(donor_obj[dnid]["surplus"]); r += 1
     # linking x <= M y
     for xi, (lp, di, dnid) in enumerate(x_index):
-        row = np.zeros(nx + ny + nu)
-        row[xi] = 1
-        row[nx + lp] = -min(deficits[di]["need"], donor_obj[dnid]["surplus"])
-        A.append(row); lo.append(-np.inf); hi.append(0)
+        ri += [r, r]; ci += [xi, nx + lp]
+        vals += [1.0, -min(deficits[di]["need"], donor_obj[dnid]["surplus"])]
+        lo.append(-np.inf); hi.append(0); r += 1
+    A = coo_matrix((vals, (ri, ci)), shape=(r, nx + ny + nu)).tocsr()
 
     integrality = np.zeros(nx + ny + nu)
     integrality[nx:nx + ny] = 1
     ub = np.full(nx + ny + nu, np.inf)
     ub[nx:nx + ny] = 1
-    res = milp(c, constraints=LinearConstraint(np.array(A), lo, hi), integrality=integrality,
+    res = milp(c, constraints=LinearConstraint(A, lo, hi), integrality=integrality,
                bounds=Bounds(np.zeros_like(ub), ub),
                options={"time_limit": 8, "mip_rel_gap": 0.01})
     if res.x is None:

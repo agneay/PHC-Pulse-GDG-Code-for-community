@@ -127,10 +127,20 @@ def _gen_json(contents, schema):
     return json.loads(resp.text)
 
 
+PHOTO_NOTE = """
+The input is a PHOTO of a paper record from this PHC (stock register, daily OPD register, indent
+form or handwritten note), possibly handwritten, in English or the regional script, possibly at an
+angle. Read the most recent day's entries. `transcript` = the relevant lines as written;
+`confidence` must be low if the handwriting or photo is unclear. If the page shows an opening
+balance, issues and a closing balance, the closing balance is the "remaining" stock; quantities
+received that day are "received"."""
+
+
 def parse_report(*, phc: dict, district: str, state: str, language: str,
                  audio: Optional[bytes] = None, mime_type: str = "audio/wav",
-                 text: Optional[str] = None, previous: Optional[dict] = None) -> dict:
-    """Returns {"report": ParsedReport-like dict, "engine": str}."""
+                 text: Optional[str] = None, previous: Optional[dict] = None,
+                 image: Optional[bytes] = None, image_mime: str = "image/jpeg") -> dict:
+    """Returns {"report": ParsedReport-like dict, "engine": str}. Input is audio, text or a photo."""
     lang_name = LANGUAGES.get(language, LANGUAGES["en"])["name"]
     if client() is not None:
         from google.genai import types
@@ -142,7 +152,11 @@ def parse_report(*, phc: dict, district: str, state: str, language: str,
                                  ensure_ascii=False) + "\n")
         prompt = VOICE_PROMPT.format(phc_name=phc["name"], district=district, state=state,
                                      lang_name=lang_name, catalogue=_catalogue(), previous=prev)
+        if image:
+            prompt += PHOTO_NOTE
         contents = [prompt]
+        if image:
+            contents.append(types.Part.from_bytes(data=image, mime_type=image_mime))
         if audio:
             contents.append(types.Part.from_bytes(data=audio, mime_type=mime_type))
         if text:
@@ -156,10 +170,10 @@ def parse_report(*, phc: dict, district: str, state: str, language: str,
         except Exception as e:
             log.exception("Gemini parse failed")
             if not text:
-                raise RuntimeError(f"Gemini could not process the audio: {e}") from e
+                raise RuntimeError(f"Gemini could not process the {'photo' if image else 'audio'}: {e}") from e
     if not text:
-        raise RuntimeError("Audio understanding needs Gemini. Configure GEMINI_API_KEY, or use the "
-                           "browser speech-to-text / text mode.")
+        raise RuntimeError(("Reading a photo" if image else "Audio understanding") + " needs Gemini. "
+                           "Configure GEMINI_API_KEY, or use the browser speech-to-text / text mode.")
     return {"report": _fallback_report(text, language, phc, previous), "engine": "rules-fallback"}
 
 
@@ -259,6 +273,66 @@ def _fallback_briefing(s: dict) -> dict:
         "actions": actions or ["No urgent action required today."],
         "risks": [f"{c['syndrome'].title()} cluster in {c['district']}" for c in s.get("clusters", [])][:4],
     }
+
+
+EMERGENCY_PROMPT = """You are the emergency logistics planner for PHC Pulse, advising a {audience} in
+India. A {kind} scenario ({severity}, {duration} days) is being simulated for {districts}. Using ONLY
+the simulation below, write an emergency supply action plan in {lang_name} (native script).
+`headline` = one sentence on the scale of the risk. `summary` = 2-3 sentences. `actions` = 4-7
+concrete, ordered steps for the next 48 hours: which transfers to approve first (name PHCs and
+drugs), which emergency indents to raise with quantities, where to pre-position life-saving drugs
+(anti-snake venom, oxytocin, ACT, ORS), bed and staff surge measures. `risks` = 2-4 bullets.
+
+Simulation (JSON):
+{data}"""
+
+
+def emergency_plan(sim: dict, audience: str, language: str) -> dict:
+    lang_name = LANGUAGES.get(language, LANGUAGES["en"])["name"]
+    if client() is not None:
+        try:
+            slim = {k: sim[k] for k in ("kind", "severity", "duration", "multipliers", "opd_multiplier",
+                                        "affected_phcs", "baseline", "scenario")}
+            slim["new_risks"] = sim["new_risks"][:20]
+            slim["transfers"] = [{"from": s["from"]["name"], "to": s["to"]["name"], "km": s["distance_km"],
+                                  "lines": [(ln["drug_code"], ln["qty"]) for ln in s["lines"]]}
+                                 for s in sim["plan"]["shipments"][:15]]
+            slim["indents"] = [{"phc": e["phc"]["name"], "drug": e["drug_code"], "qty": e["qty"]}
+                               for e in sim["plan"]["escalations"][:15]]
+            out = _gen_json([EMERGENCY_PROMPT.format(
+                audience=audience, kind=sim["kind"], severity=sim["severity"], duration=sim["duration"],
+                districts=", ".join(sim["districts"]), lang_name=lang_name,
+                data=json.dumps(slim, ensure_ascii=False))], Briefing)
+            return {**out, "engine": config.GEMINI_MODEL}
+        except Exception:
+            log.exception("Gemini emergency plan failed")
+    return {**_fallback_emergency(sim), "engine": "rules-fallback"}
+
+
+def _fallback_emergency(sim: dict) -> dict:
+    p, b, sc = sim["plan"], sim["baseline"], sim["scenario"]
+    actions = []
+    for s in p["shipments"][:3]:
+        actions.append(f"Approve transfer {s['from']['code']} -> {s['to']['code']}: "
+                       + ", ".join(f"{ln['qty']:g} {ln['drug_code']}" for ln in s["lines"]) + ".")
+    by_drug = {}
+    for e in p["escalations"]:
+        by_drug[e["drug_code"]] = by_drug.get(e["drug_code"], 0) + e["qty"]
+    for code, qty in sorted(by_drug.items(), key=lambda x: -x[1])[:3]:
+        actions.append(f"Raise an emergency indent for {qty:g} {code} from the district warehouse.")
+    life = [r for r in sim["new_risks"] if r["lifesaving"]][:3]
+    if life:
+        actions.append("Pre-position life-saving stock at " + ", ".join(
+            f"{r['phc']['code']} ({r['drug_code']})" for r in life) + ".")
+    if sc["phcs_over_bed_capacity"]:
+        actions.append(f"Arrange surge beds and staff: {sc['phcs_over_bed_capacity']} PHC(s) would exceed bed capacity.")
+    return {"headline": f"{sim['kind'].title()} ({sim['severity']}): medicine lines at risk rise from "
+                        f"{b['at_risk_lines']} to {sc['at_risk_lines']} across {sim['affected_phcs']} PHCs.",
+            "summary": f"{p['shipment_count']} transfers can move {p['units']:g} units in advance; "
+                       f"{p['escalation_count']} needs ({p['escalation_units']:g} units) must come from the warehouse.",
+            "actions": actions or ["No additional action needed for this scenario."],
+            "risks": [f"{r['drug']} at {r['phc']['name']} runs out in {r['days_to_stockout']} days"
+                      for r in sim["new_risks"][:3]]}
 
 
 ASK_PROMPT = """You are PHC Pulse Copilot for Indian public-health officers. Answer the question
