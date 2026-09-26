@@ -39,6 +39,21 @@ export const api = {
   form: (p, fd) => request('POST', p, fd, { form: true }),
 }
 
+// Read-aloud audio (Gemini TTS) for devices without a voice in the language.
+export async function ttsAudio(text, language) {
+  const t = token()
+  const res = await fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    body: JSON.stringify({ text, language }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || `Read-aloud failed (${res.status})`)
+  }
+  return res.blob()
+}
+
 // Write endpoints require a signed token. Start the demo as the national persona.
 export async function ensureToken() {
   if (token()) return

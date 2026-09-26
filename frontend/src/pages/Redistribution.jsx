@@ -4,13 +4,15 @@ import { useApp } from '../App'
 import Icon from '../components/Icon'
 import MapView from '../components/MapView'
 import { Card, ErrorBox, Kpi, Loading, useAsync } from '../components/ui'
+import { useI18n } from '../i18n'
 import { api } from '../lib/api'
-import { fmt, inr, TRANSFER_LABEL } from '../lib/format'
+import { drugLabel, fmt, inr, unitLabel } from '../lib/format'
 
 const STEPS = ['approved', 'in_transit', 'delivered']
 
 export default function Redistribution() {
   const { scopeQs, version, refresh, notify, meta } = useApp()
+  const { t, lang } = useI18n()
   const [cross, setCross] = useState(false)
   const [sel, setSel] = useState(null)
   const [busy, setBusy] = useState(null)
@@ -18,42 +20,38 @@ export default function Redistribution() {
   const { data, error, loading } = useAsync(
     () => api.get(`/api/redistribution${scopeQs}${sep}cross_state=${cross}`), [scopeQs, version, cross])
   const drug = Object.fromEntries(meta.drugs.map((d) => [d.code, d]))
+  const dname = (code) => drugLabel(drug[code], lang)
   const canApprove = meta.user.role !== 'phc'
 
   if (error) return <ErrorBox error={error} />
-  if (loading && !data) return <Loading label="Solving the redistribution MILP…" />
+  if (loading && !data) return <Loading label={t('redis.solving')} />
 
   const approve = async (s) => {
-    const items = s.lines.map((l) => `${fmt(l.qty)} ${drug[l.drug_code].unit} ${drug[l.drug_code].name}`).join(', ')
-    if (!window.confirm(`Approve transfer ${s.from.code} → ${s.to.code}?
-
-${items}
-${fmt(s.distance_km)} km · ${inr(s.cost_inr)}
-
-This reserves the stock at ${s.from.code}.`)) return
+    const items = s.lines.map((l) => `${fmt(l.qty)} ${unitLabel(t, drug[l.drug_code].unit)} ${dname(l.drug_code)}`).join(', ')
+    if (!window.confirm(t('redis.confirm', { from: s.from.code, to: s.to.code, items, km: fmt(s.distance_km), cost: inr(s.cost_inr) }))) return
     setBusy(s.id)
     try {
       await api.post(`/api/redistribution/${s.id}/approve?cross_state=${cross}`)
-      notify(`Transfer ${s.from.code} → ${s.to.code} approved`)
+      notify(t('redis.approved', { from: s.from.code, to: s.to.code }))
       refresh()
     } catch (e) { notify(e.message) } finally { setBusy(null) }
   }
-  const advance = async (t, status) => {
-    setBusy(`t${t.id}`)
+  const advance = async (tr, status) => {
+    setBusy(`t${tr.id}`)
     try {
-      await api.post(`/api/transfers/${t.id}/status`, { status })
-      notify(`${t.from_code} → ${t.to_code}: ${TRANSFER_LABEL[status]}`)
+      await api.post(`/api/transfers/${tr.id}/status`, { status })
+      notify(`${tr.from_code} → ${tr.to_code}: ${t(`transfer.${status}`)}`)
       refresh()
     } catch (e) { notify(e.message) } finally { setBusy(null) }
   }
 
   const st = data.stats
-  const active = data.transfers.filter((t) => t.status !== 'cancelled')
+  const active = data.transfers.filter((tr) => tr.status !== 'cancelled')
   const lanes = [
     ...data.shipments,
-    ...active.filter((t) => t.status !== 'delivered').map((t) => ({
-      id: `t${t.id}`, status: t.status, lines: t.lines,
-      from: { code: t.from_code, lat: t.from_lat, lon: t.from_lon }, to: { code: t.to_code, lat: t.to_lat, lon: t.to_lon } })),
+    ...active.filter((tr) => tr.status !== 'delivered').map((tr) => ({
+      id: `t${tr.id}`, status: tr.status, lines: tr.lines,
+      from: { code: tr.from_code, lat: tr.from_lat, lon: tr.from_lon }, to: { code: tr.to_code, lat: tr.to_lat, lon: tr.to_lon } })),
   ]
   const endpoints = {}
   data.shipments.forEach((s) => { endpoints[s.from.id] = s.from; endpoints[s.to.id] = s.to })
@@ -63,29 +61,29 @@ This reserves the stock at ${s.from.code}.`)) return
     <>
       <div className="page-h">
         <div>
-          <div className="eyebrow">Prescriptive optimisation</div>
-          <h1>Redistribution planner</h1>
-          <p>A mixed-integer program chooses which PHC ships what, to whom, under transport-cost constraints. It weighs trip cost against how soon each shortage hits and how critical the drug is, and puts several medicines on one vehicle when the lane is shared.</p>
+          <div className="eyebrow">{t('redis.eyebrow')}</div>
+          <h1>{t('redis.title')}</h1>
+          <p>{t('redis.intro')}</p>
         </div>
         <div className="right">
-          <label className="btn" title="Phase 3: allow transfers across state boundaries">
-            <input type="checkbox" checked={cross} onChange={(e) => setCross(e.target.checked)} /> Cross-state transfers
+          <label className="btn" title={t('redis.crossTitle')}>
+            <input type="checkbox" checked={cross} onChange={(e) => setCross(e.target.checked)} /> {t('redis.cross')}
           </label>
         </div>
       </div>
 
-      {st.failed && <div className="err" role="alert"><b>The optimiser could not produce a plan</b> ({st.solver}). Shortages below are real, but no transfers were computed: this is not "nothing to move". Raise emergency indents or retry.</div>}
-      {!st.failed && st.time_limited && <div className="note">The optimiser hit its time limit, so this plan is feasible but may not be the cheapest.</div>}
+      {st.failed && <div className="err" role="alert">{t('redis.failed', { solver: st.solver })}</div>}
+      {!st.failed && st.time_limited && <div className="note">{t('redis.timeLimited')}</div>}
 
       <div className="grid g-kpi">
-        <Kpi icon="truck" label="Recommended shipments" value={data.shipments.length} sub={`${st.lanes ?? 0} candidate lanes evaluated`} />
-        <Kpi icon="pill" label="Units rebalanced" value={fmt(st.units_moved)} sub={`${st.coverage != null ? Math.round(st.coverage * 100) : 0}% of forecast shortfall covered from surplus`} tone="good" />
-        <Kpi icon="map" label="Plan transport cost" value={inr(st.cost)} sub="fixed + ₹/km + inter-state paperwork" />
-        <Kpi icon="alert" label="Escalate to warehouse" value={data.escalations.length} sub="shortfalls no nearby surplus can cover" tone="warn" />
+        <Kpi icon="truck" label={t('redis.kpiShipments')} value={data.shipments.length} sub={t('redis.kpiShipmentsSub', { n: st.lanes ?? 0 })} />
+        <Kpi icon="pill" label={t('redis.kpiUnits')} value={fmt(st.units_moved)} sub={t('redis.kpiUnitsSub', { pct: st.coverage != null ? Math.round(st.coverage * 100) : 0 })} tone="good" />
+        <Kpi icon="map" label={t('redis.kpiCost')} value={inr(st.cost)} sub={t('redis.kpiCostSub')} />
+        <Kpi icon="alert" label={t('redis.kpiEscalate')} value={data.escalations.length} sub={t('redis.kpiEscalateSub')} tone="warn" />
       </div>
 
       <div className="grid g-2">
-        <Card title="Recommended transfers" icon="truck" hint="sorted by urgency"
+        <Card title={t('redis.recommended')} icon="truck" hint={t('redis.byUrgency')}
           bodyClass="card-b" right={<span className="muted small">{st.solver}</span>}>
           <div className="stack" style={{ maxHeight: 620, overflowY: 'auto', paddingRight: 4 }}>
             {data.shipments.map((s) => (
@@ -94,66 +92,66 @@ This reserves the stock at ${s.from.code}.`)) return
                   <Link to={`/phc/${s.from.id}`}>{s.from.code}</Link><span className="muted small">{s.from.name.replace('PHC ', '')}</span>
                   <Icon name="arrow" size={15} />
                   <Link to={`/phc/${s.to.id}`}>{s.to.code}</Link><span className="muted small">{s.to.name.replace('PHC ', '')}</span>
-                  <span className={`pill ${s.urgency_days <= 7 ? 'critical' : 'high'}`} style={{ marginLeft: 'auto' }}>{s.urgency_days <= 0 ? "stocked out" : `needed in ${s.urgency_days} days`}</span>
+                  <span className={`pill ${s.urgency_days <= 7 ? 'critical' : 'high'}`} style={{ marginLeft: 'auto' }}>{s.urgency_days <= 0 ? t('ship.stockedOut') : t('ship.neededIn', { n: s.urgency_days })}</span>
                 </div>
                 {s.lines.map((l) => (
                   <div key={l.drug_code} className="msg">
-                    “{s.from.code} has surplus {drug[l.drug_code].name.toLowerCase()}; {s.to.code} {l.needed_in_days <= 0
-                      ? 'has already run out'
-                      : `needs it in ${l.needed_in_days} day${l.needed_in_days === 1 ? '' : 's'}`}.”
-                    <b> Ship {fmt(l.qty)} {drug[l.drug_code].unit}.</b>
+                    “{l.needed_in_days <= 0
+                      ? t('redis.lineOut', { from: s.from.code, to: s.to.code, drug: dname(l.drug_code) })
+                      : t('redis.lineNeeds', { from: s.from.code, to: s.to.code, drug: dname(l.drug_code), n: l.needed_in_days })}”
+                    <b> {t('redis.ship', { qty: fmt(l.qty), unit: unitLabel(t, drug[l.drug_code].unit) })}</b>
                   </div>
                 ))}
                 <div className="meta">
-                  <span>{fmt(s.distance_km)} km by road</span><span>ETA {s.eta_hours} h</span><span>{inr(s.cost_inr)}</span>
-                  {s.cross_state ? <span className="pill surplus">inter-state</span> : s.cross_district ? <span className="pill grey">cross-district</span> : <span className="pill grey">same district</span>}
-                  {s.lines.length > 1 && <span className="pill ok">consolidated · {s.lines.length} drugs</span>}
+                  <span>{t('redis.byRoad', { km: fmt(s.distance_km) })}</span><span>{t('redis.eta', { h: s.eta_hours })}</span><span>{inr(s.cost_inr)}</span>
+                  {s.cross_state ? <span className="pill surplus">{t('redis.interState')}</span> : s.cross_district ? <span className="pill grey">{t('redis.crossDistrict')}</span> : <span className="pill grey">{t('redis.sameDistrict')}</span>}
+                  {s.lines.length > 1 && <span className="pill ok">{t('redis.consolidated', { n: s.lines.length })}</span>}
                 </div>
                 {canApprove && (
                   <div className="row">
                     <button className="btn primary sm" onClick={() => approve(s)} disabled={busy === s.id}>
-                      {busy === s.id ? <span className="spinner" /> : <Icon name="check" size={14} />}Approve transfer
+                      {busy === s.id ? <span className="spinner" /> : <Icon name="check" size={14} />}{t('redis.approve')}
                     </button>
                   </div>
                 )}
               </div>
             ))}
-            {!data.shipments.length && !st.failed && <div className="empty">No transfers needed in this scope. Surplus and shortages are balanced.</div>}
+            {!data.shipments.length && !st.failed && <div className="empty">{t('redis.none')}</div>}
           </div>
         </Card>
-        <Card title="Lanes" icon="map" hint="orange = recommended · blue = approved / in transit" bodyClass="">
+        <Card title={t('redis.lanes')} icon="map" hint={t('redis.lanesHint')} bodyClass="">
           <MapView phcs={mapPhcs} lanes={lanes} selectedLane={sel} onLaneClick={setSel} tall />
         </Card>
       </div>
 
-      <Card title="Transfer tracker" icon="refresh" hint="one-tap approval → dispatch → delivery updates both PHCs' stock" bodyClass="table-wrap">
-        {!active.length ? <div className="empty">No transfers yet. Approve a recommendation above.</div> : (
+      <Card title={t('redis.tracker')} icon="refresh" hint={t('redis.trackerHint')} bodyClass="table-wrap">
+        {!active.length ? <div className="empty">{t('redis.noTransfers')}</div> : (
           <table className="t">
-            <thead><tr><th>Lane</th><th>Items</th><th>Progress</th><th>Approved by</th><th /></tr></thead>
+            <thead><tr><th>{t('th.lane')}</th><th>{t('th.items')}</th><th>{t('th.progress')}</th><th>{t('th.approvedBy')}</th><th /></tr></thead>
             <tbody>
-              {active.map((t) => {
-                const idx = STEPS.indexOf(t.status)
+              {active.map((tr) => {
+                const idx = STEPS.indexOf(tr.status)
                 return (
-                  <tr key={t.id}>
-                    <td><b>{t.from_code}</b> → <b>{t.to_code}</b><div className="muted small">{fmt(t.distance_km)} km · {inr(t.cost_inr)}</div></td>
-                    <td className="small">{t.lines.map((l) => `${fmt(l.qty)} ${l.unit} ${l.drug_name}`).join(', ')}</td>
+                  <tr key={tr.id}>
+                    <td><b>{tr.from_code}</b> → <b>{tr.to_code}</b><div className="muted small">{fmt(tr.distance_km)} km · {inr(tr.cost_inr)}</div></td>
+                    <td className="small">{tr.lines.map((l) => `${fmt(l.qty)} ${unitLabel(t, l.unit)} ${dname(l.drug_code)}`).join(', ')}</td>
                     <td>
                       <div className="timeline">
                         {STEPS.map((s, i) => (
                           <span key={s} style={{ display: 'contents' }}>
                             {i > 0 && <span className={`bar ${i <= idx ? 'done' : ''}`} />}
-                            <span className={`st ${i < idx || t.status === 'delivered' ? 'done' : i === idx ? 'cur' : ''}`}><span className="d" />{TRANSFER_LABEL[s]}</span>
+                            <span className={`st ${i < idx || tr.status === 'delivered' ? 'done' : i === idx ? 'cur' : ''}`}><span className="d" />{t(`transfer.${s}`)}</span>
                           </span>
                         ))}
                       </div>
-                      {t.eta_at && <div className="muted small">ETA {t.eta_at.replace('T', ' ')}</div>}
+                      {tr.eta_at && <div className="muted small">{t('redis.etaAt', { at: tr.eta_at.replace('T', ' ') })}</div>}
                     </td>
-                    <td className="small">{t.approved_by}<div className="muted">{t.created_at.replace('T', ' ')}</div></td>
+                    <td className="small">{tr.approved_by}<div className="muted">{tr.created_at.replace('T', ' ')}</div></td>
                     <td>
-                      {t.status === 'approved' && <button className="btn sm orange" disabled={busy === `t${t.id}`} onClick={() => advance(t, 'in_transit')}>Dispatch</button>}
-                      {t.status === 'in_transit' && <button className="btn sm primary" disabled={busy === `t${t.id}`} onClick={() => advance(t, 'delivered')}>Mark delivered</button>}
-                      {t.status === 'approved' && canApprove && <button className="btn sm ghost" onClick={() => advance(t, 'cancelled')}>Cancel</button>}
-                      {t.status === 'delivered' && <span className="pill delivered"><Icon name="check" size={12} />Resolved</span>}
+                      {tr.status === 'approved' && <button className="btn sm orange" disabled={busy === `t${tr.id}`} onClick={() => advance(tr, 'in_transit')}>{t('redis.dispatch')}</button>}
+                      {tr.status === 'in_transit' && <button className="btn sm primary" disabled={busy === `t${tr.id}`} onClick={() => advance(tr, 'delivered')}>{t('redis.markDelivered')}</button>}
+                      {tr.status === 'approved' && canApprove && <button className="btn sm ghost" onClick={() => advance(tr, 'cancelled')}>{t('redis.cancel')}</button>}
+                      {tr.status === 'delivered' && <span className="pill delivered"><Icon name="check" size={12} />{t('redis.resolved')}</span>}
                     </td>
                   </tr>
                 )
@@ -163,21 +161,21 @@ This reserves the stock at ${s.from.code}.`)) return
         )}
       </Card>
 
-      <Card title="Escalations to district warehouse" icon="alert" hint="shortfalls with no economical donor: raise an emergency indent" bodyClass="table-wrap">
+      <Card title={t('redis.escalations')} icon="alert" hint={t('redis.escalationsHint')} bodyClass="table-wrap">
         <table className="t">
-          <thead><tr><th>PHC</th><th>Drug</th><th className="r">Shortfall</th><th className="r">Needed in</th></tr></thead>
+          <thead><tr><th>{t('th.phc')}</th><th>{t('th.drug')}</th><th className="r">{t('th.shortfall')}</th><th className="r">{t('th.neededIn')}</th></tr></thead>
           <tbody>
             {data.escalations.slice(0, 40).map((e) => (
               <tr key={e.phc.id + e.drug_code}>
                 <td><Link to={`/phc/${e.phc.id}`}><b>{e.phc.code}</b></Link> {e.phc.name}</td>
-                <td>{drug[e.drug_code].name}</td>
-                <td className="r num">{fmt(e.qty)} {drug[e.drug_code].unit}</td>
-                <td className="r num">{e.needed_in_days <= 0 ? <span className="pill stocked_out">now</span> : `${e.needed_in_days} days`}</td>
+                <td>{dname(e.drug_code)}</td>
+                <td className="r num">{fmt(e.qty)} {unitLabel(t, drug[e.drug_code].unit)}</td>
+                <td className="r num">{e.needed_in_days <= 0 ? <span className="pill stocked_out">{t('days.now')}</span> : t('days.many', { n: e.needed_in_days })}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!data.escalations.length && <div className="empty">Nothing to escalate.</div>}
+        {!data.escalations.length && <div className="empty">{t('redis.noEscalations')}</div>}
       </Card>
     </>
   )

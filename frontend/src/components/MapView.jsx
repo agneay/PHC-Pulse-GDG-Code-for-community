@@ -2,7 +2,8 @@ import 'leaflet/dist/leaflet.css'
 import { useEffect } from 'react'
 import { Circle, CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet'
 import { useNavigate } from 'react-router-dom'
-import { HEALTH_COLOR, SYNDROME_LABEL } from '../lib/format'
+import { useI18n } from '../i18n'
+import { HEALTH_COLOR } from '../lib/format'
 
 function Fit({ points }) {
   const map = useMap()
@@ -25,6 +26,7 @@ function Fit({ points }) {
 
 export default function MapView({ phcs = [], clusters = [], lanes = [], selectedLane, tall, onLaneClick }) {
   const nav = useNavigate()
+  const { t } = useI18n()
   const points = phcs.map((p) => [p.lat, p.lon])
   return (
     <div className={`map ${tall ? 'tall' : ''}`}>
@@ -35,7 +37,7 @@ export default function MapView({ phcs = [], clusters = [], lanes = [], selected
         {clusters.map((c) => (
           <Circle key={c.id} center={[c.lat, c.lon]} radius={28000}
             pathOptions={{ color: '#c62828', weight: 2, dashArray: '6 6', fillColor: '#c62828', fillOpacity: 0.08 }}>
-            <Tooltip sticky>Outbreak signal: {SYNDROME_LABEL[c.syndrome]} cluster · {c.phc_codes.join(', ')}</Tooltip>
+            <Tooltip sticky>{t('map.cluster', { syndrome: t(`syndrome.${c.syndrome}`), phcs: c.phc_codes.join(', ') })}</Tooltip>
           </Circle>
         ))}
         {lanes.map((s) => {
@@ -54,9 +56,9 @@ export default function MapView({ phcs = [], clusters = [], lanes = [], selected
             pathOptions={{ color: '#fff', weight: 1.5, fillColor: HEALTH_COLOR[p.health] || '#999', fillOpacity: 0.95 }}>
             <Tooltip>
               <b>{p.code} · {p.name}</b><br />
-              Resilience score {p.score}/100 · {p.critical_items} critical item(s)
-              {p.anomalies ? <><br />⚠ {p.anomalies} footfall anomaly</> : null}
-              <br />{p.reported_today ? 'Reported today' : 'Report due today'}
+              {t('map.score', { score: p.score, n: p.critical_items })}
+              {p.anomalies ? <><br />⚠ {t('map.anomaly', { n: p.anomalies })}</> : null}
+              {p.reported_today !== undefined && <><br />{p.reported_today ? t('map.reportedToday') : p.stale ? t('report.silent', { n: p.days_since_report }) : t('map.reportDue')}</>}
             </Tooltip>
           </CircleMarker>
         ))}

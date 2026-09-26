@@ -13,6 +13,9 @@ USE_VERTEX = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true",
 GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Read-aloud fallback for devices without an Indian-language voice.
+GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore")
 
 # Token signing for the demo role-based access (row-level scoping by state/district/PHC).
 AUTH_SECRET = os.getenv("PHC_AUTH_SECRET") or "phc-pulse-demo-secret-change-me"

@@ -135,8 +135,9 @@ def check_report(phc_id: int, report: dict) -> list:
                                  if l["drug_code"] == code and l.get("kind", "remaining") == kind)
     out = []
 
-    def warn(field, message, drug_code=None, **kw):
-        out.append({"field": field, "drug_code": drug_code, "message": message, **kw})
+    def warn(field, message, drug_code=None, code=None, **kw):
+        # `code` + the numbers let the dashboard phrase it in the worker's language.
+        out.append({"field": field, "drug_code": drug_code, "code": code, "message": message, **kw})
 
     for code in dict.fromkeys(l["drug_code"] for l in lines):
         d, it = DRUG_BY_CODE[code], items[code]
@@ -150,17 +151,19 @@ def check_report(phc_id: int, report: dict) -> list:
             expected = max(last + rec - disc - daily * since, 0)
             if q > (last + rec) * 1.5 + max(10, 3 * daily):
                 warn(code, f"{name}: {q:g} {unit} is well above the last count ({last:g}) and no "
-                           f"receipt was reported. Was new stock received?", code, reported=q, expected=round(expected))
+                           f"receipt was reported. Was new stock received?", code, code="count_high",
+                     reported=q, expected=round(expected), last=last)
             elif expected >= 20 and q < 0.3 * expected:
                 warn(code, f"{name}: {q:g} {unit} is far below the expected ~{expected:.0f}. Check the unit "
-                           f"(boxes vs {unit}) or report expired/damaged stock separately.", code,
+                           f"(boxes vs {unit}) or report expired/damaged stock separately.", code, code="count_low",
                      reported=q, expected=round(expected))
         if disc > last + rec:
             warn(code, f"{name}: {disc:g} {unit} discarded, but only {last + rec:g} were on the shelf.",
-                 code, reported=disc, expected=round(last + rec))
+                 code, code="discard_exceeds", reported=disc, expected=round(last + rec))
         if rec > max(daily * 90, 100):
             warn(code, f"{name}: a receipt of {rec:g} {unit} is about {rec / daily:.0f} days of use. "
-                       f"Check the number and unit.", code, reported=rec, expected=round(daily * 30))
+                       f"Check the number and unit.", code, code="receipt_large", reported=rec,
+                 expected=round(daily * 30), days=round(rec / daily))
 
     opd = report.get("opd_count")
     if opd is not None:
@@ -169,14 +172,14 @@ def check_report(phc_id: int, report: dict) -> list:
         med = float(np.median(hist)) if hist.size else None
         if med and opd > max(3 * med, med + 50):
             warn("opd_count", f"OPD {opd} is more than 3x the usual ~{med:.0f}. If correct, it will be "
-                              f"reviewed as a possible outbreak signal.", reported=opd, expected=round(med))
+                              f"reviewed as a possible outbreak signal.", code="opd_high", reported=opd, expected=round(med))
     if report.get("beds_occupied") is not None and report["beds_occupied"] > phc["beds_total"]:
         warn("beds_occupied", f"{report['beds_occupied']} beds occupied, but this PHC has "
-                              f"{phc['beds_total']} beds.", reported=report["beds_occupied"],
+                              f"{phc['beds_total']} beds.", code="beds_exceed", reported=report["beds_occupied"],
              expected=phc["beds_total"])
     if report.get("staff_present") is not None and report["staff_present"] > phc["staff_sanctioned"] * 1.5:
         warn("staff_present", f"{report['staff_present']} staff present, but {phc['staff_sanctioned']} "
-                              f"posts are sanctioned.", reported=report["staff_present"],
+                              f"posts are sanctioned.", code="staff_exceed", reported=report["staff_present"],
              expected=phc["staff_sanctioned"])
     return out
 

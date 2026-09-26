@@ -397,11 +397,35 @@ def briefing(language: str = "en", scope: dict = Depends(scope_dep),
 
 class AskIn(BaseModel):
     question: str
+    language: Optional[str] = None      # the site language; the answer follows the question's
 
 
 @app.post("/api/ask")
 def ask(body: AskIn, scope: dict = Depends(scope_dep)):
-    return gemini.ask(body.question, service.snapshot(result(), scope))
+    return gemini.ask(body.question[:2000], service.snapshot(result(), scope), body.language)
+
+
+class TtsIn(BaseModel):
+    text: str
+    language: str = "en"
+
+
+@app.post("/api/tts")
+def tts(body: TtsIn, user: dict = Depends(auth.require_user)):
+    """Read-back audio for devices without a voice in the worker's language."""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "nothing to read")
+    if len(text) > 1500:
+        raise HTTPException(413, "text too long to read aloud")
+    try:
+        wav = gemini.tts(text, body.language if body.language in LANGUAGES else "en")
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logging.getLogger("phc.tts").exception("Gemini TTS failed")
+        raise HTTPException(502, f"Read-aloud failed: {e}")
+    return Response(wav, media_type="audio/wav")
 
 
 class AlertIn(BaseModel):

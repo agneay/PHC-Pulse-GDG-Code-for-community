@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useApp } from '../App'
 import Icon from '../components/Icon'
+import { SpeakButton, useSpeak } from '../components/Speak'
 import { Card, EngineTag, StatusPill, useAsync } from '../components/ui'
+import { useI18n } from '../i18n'
 import { api } from '../lib/api'
-import { daysText, fmt } from '../lib/format'
-import { blobToWav, speak } from '../lib/wav'
+import { daysText, drugLabel, fmt, unitLabel } from '../lib/format'
+import { blobToWav, stopSpeaking } from '../lib/wav'
 
+// What the worker says / sees in the *reporting* language (the PHC's language by default),
+// independent of the language the website itself is shown in.
 const SAMPLES = {
   en: 'Paracetamol 150 strips left, ORS 60 sachets, zinc 20 strips. 3 beds occupied, 9 staff present, 72 patients in OPD today, 18 with fever.',
   hi: 'पैरासिटामोल की 150 स्ट्रिप बची हैं, ओआरएस 60 पैकेट, 3 बिस्तर भरे हैं, 9 स्टाफ आए हैं, आज ओपीडी में 72 मरीज़ आए।',
@@ -21,15 +25,15 @@ const PROMPT = {
   kn: 'ಇಂದಿನ ಔಷಧ ದಾಸ್ತಾನು, ಹಾಸಿಗೆಗಳು, ಸಿಬ್ಬಂದಿ ಮತ್ತು ರೋಗಿಗಳ ಸಂಖ್ಯೆಯನ್ನು ಹೇಳಿ.',
   or: 'ଆଜିର ଔଷଧ ଷ୍ଟକ, ଶଯ୍ୟା, କର୍ମଚାରୀ ଓ ରୋଗୀ ସଂଖ୍ୟା କୁହନ୍ତୁ।',
 }
-const FIELDS = [
-  ['opd_count', 'OPD patients'], ['fever_cases', 'Fever cases'], ['diarrhoea_cases', 'Diarrhoea cases'],
-  ['respiratory_cases', 'Respiratory cases'], ['beds_occupied', 'Beds occupied'], ['staff_present', 'Staff present'],
-]
+const FIELDS = ['opd_count', 'fever_cases', 'diarrhoea_cases', 'respiratory_cases', 'beds_occupied', 'staff_present']
 const MAX_SECONDS = 60
 const FLAG_STYLE = { borderColor: 'var(--red, #c62828)', background: '#fff4f4' }
+const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
 export default function VoiceReport() {
   const { meta, refresh, notify } = useApp()
+  const { t, lang: uiLang } = useI18n()
+  const say = useSpeak()
   const [sp] = useSearchParams()
   const phcs = useAsync(() => api.get('/api/overview'), [])
   const userPhc = meta.user.scope?.phc_id
@@ -41,11 +45,13 @@ export default function VoiceReport() {
   const [secs, setSecs] = useState(0)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
-  const [out, setOut] = useState(null)        // {report, engine}
+  const [out, setOut] = useState(null)        // {report, engine, warnings}
   const [saved, setSaved] = useState(null)
   const [live, setLive] = useState('')
   const mr = useRef(null); const chunks = useRef([]); const timer = useRef(null); const sr = useRef(null)
-  const liveRef = useRef('')
+  const recording = useRef(false)             // read by recogniser callbacks (closures don't see state)
+  const finals = useRef('')                   // recognised text kept across recogniser restarts
+  const srDone = useRef(null)                 // resolves when the recogniser has flushed its last result
   const followUp = useRef(false)
 
   const phc = phcs.data?.phcs.find((p) => p.id === phcId)
@@ -56,9 +62,24 @@ export default function VoiceReport() {
   const bcp = meta.languages[language]?.bcp47 || 'en-IN'
   const gem = meta.gemini.enabled
   const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+  const canRecord = typeof window !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined'
+  const voiceWorks = gem ? canRecord : !!SR
 
-  useEffect(() => () => { clearInterval(timer.current); mr.current?.stream?.getTracks().forEach((t) => t.stop()) }, [])
+  const stop = () => {
+    clearInterval(timer.current)
+    recording.current = false
+    sr.current?.stop()
+    if (mr.current && mr.current.state !== 'inactive') mr.current.stop()
+    setRec(false)
+  }
 
+  useEffect(() => () => {        // leaving the page: release the microphone
+    recording.current = false
+    clearInterval(timer.current)
+    sr.current?.abort?.()
+    mr.current?.stream?.getTracks().forEach((tr) => tr.stop())
+    stopSpeaking()
+  }, [])
   useEffect(() => { if (rec && secs >= MAX_SECONDS) stop() })   // hard cap: 60 s per report
 
   const reset = () => { setOut(null); setSaved(null); setErr(null); setLive(''); followUp.current = false }
@@ -66,13 +87,51 @@ export default function VoiceReport() {
   const handleResult = (r) => {
     setOut(r)
     const rep = r.report
-    const say = [rep.confirmation, rep.follow_up_question].filter(Boolean).join(' ')
-    setTimeout(() => speak(say, bcp), 150)
+    say([rep.confirmation, rep.follow_up_question].filter(Boolean).join(' '), language)
+  }
+
+  const micError = (e) => {
+    if (e?.name === 'NotAllowedError' || e === 'not-allowed' || e === 'service-not-allowed') return t('voice.errMicBlocked')
+    if (e?.name === 'NotFoundError' || e === 'audio-capture') return t('voice.errNoMic')
+    if (e === 'network') return t('voice.errSpeechNetwork')
+    if (e === 'language-not-supported') return t('voice.errSpeechLang', { language: meta.languages[language].name })
+    return t('voice.errMicOther', { reason: e?.message || e })
+  }
+
+  // Browser speech-to-text (used when Gemini is off). Chrome ends "continuous" recognition after
+  // a pause, so it is restarted until the worker presses stop, keeping what was already heard.
+  const startRecogniser = () => {
+    const r = new SR()
+    r.lang = bcp; r.continuous = true; r.interimResults = true
+    let doneResolve
+    srDone.current = new Promise((res) => { doneResolve = res })
+    r.onresult = (e) => {
+      let interim = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finals.current += `${e.results[i][0].transcript} `
+        else interim += e.results[i][0].transcript
+      }
+      setLive((finals.current + interim).trim())
+    }
+    r.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return
+      setErr(micError(e.error))
+      stop()
+    }
+    r.onend = () => {
+      if (recording.current) { try { r.start(); return } catch { /* fall through */ } }
+      doneResolve()
+    }
+    r.start()
+    sr.current = r
   }
 
   const start = async (isFollowUp = false) => {
     setErr(null); if (!isFollowUp) { setOut(null); setSaved(null) }
     followUp.current = isFollowUp
+    stopSpeaking()                   // never record our own read-back
+    finals.current = ''
+    setLive('')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const m = new MediaRecorder(stream)
@@ -81,34 +140,20 @@ export default function VoiceReport() {
       m.onstop = () => onStop(stream)
       m.start()
       mr.current = m
-      setRec(true); setSecs(0); setLive('')
-      liveRef.current = ''
+      recording.current = true
+      setRec(true); setSecs(0)
       timer.current = setInterval(() => setSecs((s) => s + 1), 1000)
-      if (!gem && SR) {           // no Gemini: browser speech-to-text provides the transcript
-        const r = new SR()
-        r.lang = bcp; r.continuous = true; r.interimResults = true
-        r.onresult = (e) => {
-          liveRef.current = Array.from(e.results).map((x) => x[0].transcript).join(' ')
-          setLive(liveRef.current)
-        }
-        r.start(); sr.current = r
-      }
-    } catch (e) { setErr(`Microphone unavailable: ${e.message}. Use text mode instead.`) }
-  }
-
-  const stop = () => {
-    clearInterval(timer.current)
-    sr.current?.stop()
-    if (mr.current && mr.current.state !== 'inactive') mr.current.stop()
-    setRec(false)
+      if (!gem) startRecogniser()
+    } catch (e) { setErr(micError(e)) }
   }
 
   const onStop = async (stream) => {
-    stream.getTracks().forEach((t) => t.stop())
+    stream.getTracks().forEach((tr) => tr.stop())
     const prev = followUp.current ? out?.report : null
     setBusy(true)
     try {
       if (gem) {
+        if (!chunks.current.length) throw new Error(t('voice.errEmpty'))
         const blob = new Blob(chunks.current, { type: mr.current.mimeType || 'audio/webm' })
         const wav = await blobToWav(blob)
         const fd = new FormData()
@@ -116,9 +161,9 @@ export default function VoiceReport() {
         if (prev) fd.append('previous', JSON.stringify(prev))
         handleResult(await api.form('/api/reports/voice', fd))
       } else {
-        await new Promise((r) => setTimeout(r, 400))
-        const transcript = liveRef.current
-        if (!transcript.trim()) throw new Error('No speech captured. Gemini is not configured here, so speech-to-text relies on the browser (Chrome). Try again or use text mode.')
+        await Promise.race([srDone.current, new Promise((r) => setTimeout(r, 2000))])
+        const transcript = finals.current.trim() || live
+        if (!transcript.trim()) throw new Error(t('voice.errNoSpeech'))
         handleResult(await api.post('/api/reports/parse', { phc_id: phcId, language, text: transcript, previous: prev }))
       }
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
@@ -145,97 +190,106 @@ export default function VoiceReport() {
     try {
       // Submitting while warnings are on screen means the worker has re-checked those numbers.
       const r = await api.post('/api/reports/submit', { phc_id: phcId, language, channel: mode === 'voice' ? 'voice' : 'text', engine: out.engine, report: out.report, confirmed: warnings.length > 0 })
-      setSaved(r); refresh(); notify(`Report saved for ${r.phc}. Forecasts recomputed.`)
+      setSaved(r); refresh(); notify(t('voice.saved', { phc: r.phc }))
     } catch (e) {
       if (e.status === 409 && e.detail?.warnings) setOut((o) => ({ ...o, warnings: e.detail.warnings }))
       else setErr(e.message)
     } finally { setBusy(false) }
   }
 
-  const drugName = (c) => meta.drugs.find((d) => d.code === c)
+  const drug = (c) => meta.drugs.find((d) => d.code === c)
+  const warningText = (w) => {
+    const d = drug(w.drug_code)
+    return w.code ? t(`warn.${w.code}`, { ...w, drug: drugLabel(d, uiLang), unit: d ? unitLabel(t, d.unit) : '' }) : w.message
+  }
   const rep = out?.report
 
   return (
     <>
       <div className="page-h">
         <div>
-          <div className="eyebrow">Voice-first reporting · under 60 seconds</div>
-          <h1>Daily voice report</h1>
-          <p>The ASHA/ANM speaks naturally in their own language, mixing languages is fine. Gemini transcribes, translates and structures the report, reads the numbers back in the same language, and asks for anything missing.</p>
+          <div className="eyebrow">{t('voice.eyebrow')}</div>
+          <h1>{t('voice.title')}</h1>
+          <p>{t('voice.intro')}</p>
         </div>
       </div>
 
       <div className="voice-hero">
-        <Card title="1 · Who is reporting" icon="users">
+        <Card title={t('voice.step1')} icon="users">
           <div className="stack">
             <div className="row">
               <select className="select" style={{ flex: 1 }} value={phcId ?? ''} disabled={!!userPhc}
-                onChange={(e) => { setPhcId(Number(e.target.value)); setLang(null); reset() }} aria-label="PHC">
-                {!phcId && <option value="">Select the reporting PHC…</option>}
+                onChange={(e) => { setPhcId(Number(e.target.value)); setLang(null); reset() }} aria-label={t('voice.phc')}>
+                {!phcId && <option value="">{t('voice.selectPhc')}</option>}
                 {(phcs.data?.phcs || []).map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name} ({p.district_code})</option>)}
               </select>
             </div>
+            <div className="eyebrow">{t('voice.reportLanguage')}</div>
             <div className="lang-tabs">
               {['en', 'hi', 'ta', 'kn', 'or', 'te', 'bn', 'mr'].map((l) => (
-                <button key={l} className={language === l ? 'on' : ''} onClick={() => { setLang(l); reset() }}>{meta.languages[l].native}</button>
+                <button key={l} className={language === l ? 'on' : ''} onClick={() => { setLang(l); reset() }} lang={l}>{meta.languages[l].native}</button>
               ))}
             </div>
-            <div className="say">
+            <div className="say" lang={language}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <b>{PROMPT[language] || PROMPT.en}</b>
-                <button className="btn ghost sm" onClick={() => speak(PROMPT[language] || PROMPT.en, bcp)} title="Play prompt"><Icon name="speaker" size={15} /></button>
+                <SpeakButton text={PROMPT[language] || PROMPT.en} language={PROMPT[language] ? language : 'en'} title={t('voice.playPrompt')} />
               </div>
-              <div className="small" style={{ marginTop: 6, opacity: .85 }}>e.g. “{SAMPLES[language] || SAMPLES.en}”</div>
+              <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>{t('voice.eg')} “{SAMPLES[language] || SAMPLES.en}”</div>
             </div>
             <div className="row small">
-              <span className="muted">Engine:</span>
-              {gem ? <span className="pill ai"><Icon name="spark" size={12} />{meta.gemini.model}: audio → structured JSON</span>
-                : <span className="pill grey">Browser speech-to-text + rules (set GEMINI_API_KEY for Gemini)</span>}
+              <span className="muted">{t('voice.engine')}</span>
+              {gem ? <span className="pill ai"><Icon name="spark" size={12} />{t('voice.engineGemini', { model: meta.gemini.model })}</span>
+                : <span className="pill grey">{t('voice.engineBrowser')}</span>}
             </div>
           </div>
         </Card>
 
-        <Card title="2 · Speak" icon="mic" right={<div className="lang-tabs">
-          <button className={mode === 'voice' ? 'on' : ''} onClick={() => setMode('voice')}>Voice</button>
-          <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>Type</button></div>}>
+        <Card title={t('voice.step2')} icon="mic" right={<div className="lang-tabs">
+          <button className={mode === 'voice' ? 'on' : ''} onClick={() => setMode('voice')}>{t('voice.modeVoice')}</button>
+          <button className={mode === 'text' ? 'on' : ''} onClick={() => setMode('text')}>{t('voice.modeType')}</button></div>}>
           {mode === 'voice' ? (
             <div style={{ textAlign: 'center' }}>
-              <button className={`mic ${rec ? 'rec' : ''}`} onClick={() => (rec ? stop() : start(false))} disabled={busy || !phcId}
-                aria-label={rec ? 'Stop recording' : 'Start recording'}>
+              <button className={`mic ${rec ? 'rec' : ''}`} onClick={() => (rec ? stop() : start(false))} disabled={busy || !phcId || !voiceWorks}
+                aria-label={rec ? t('voice.stop') : t('voice.start')} aria-pressed={rec}>
                 <Icon name={rec ? 'stop' : 'mic'} size={48} stroke={1.8} />
               </button>
-              <div className="num" style={{ fontSize: 20, fontWeight: 700 }}>{rec ? `0:${String(secs).padStart(2, '0')} / 1:00` : busy ? 'Understanding…' : 'Tap to speak'}</div>
-              {busy && <div className="row" style={{ justifyContent: 'center', marginTop: 6 }}><span className="spinner" /> {gem ? 'Gemini is transcribing and structuring' : 'Parsing'}</div>}
-              {live && <div className="note" style={{ marginTop: 10, textAlign: 'left' }}>{live}</div>}
-              {!gem && !SR && <div className="note" style={{ marginTop: 10 }}>This browser has no speech recognition and Gemini isn't configured. Use <b>Type</b> mode.</div>}
+              <div className="num" style={{ fontSize: 'calc(20px * var(--fs, 1))', fontWeight: 700 }} aria-live="polite">
+                {rec ? `${clock(secs)} / ${clock(MAX_SECONDS)}` : busy ? t('voice.understanding') : t('voice.tapToSpeak')}
+              </div>
+              {!phcId && <div className="note" style={{ marginTop: 10 }}>{t('voice.pickPhcFirst')}</div>}
+              {busy && <div className="row" style={{ justifyContent: 'center', marginTop: 6 }}><span className="spinner" /> {gem ? t('voice.busyGemini') : t('voice.busyParsing')}</div>}
+              {live && <div className="note" style={{ marginTop: 10, textAlign: 'left' }} lang={language}>{live}</div>}
+              {!voiceWorks && <div className="note" style={{ marginTop: 10 }}>{gem ? t('voice.noRecorder') : t('voice.noRecognition')}</div>}
             </div>
           ) : (
             <div className="stack">
-              <textarea className="textarea" rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type or paste the worker's report in any language…" />
+              <textarea className="textarea" rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={t('voice.typePlaceholder')} aria-label={t('voice.typePlaceholder')} lang={language} />
               <div className="row">
-                <button className="btn" onClick={() => setText(SAMPLES[language] || SAMPLES.en)}>Use sample</button>
-                <button className="btn primary" onClick={parseText} disabled={busy || !text.trim() || !phcId}>{busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}Understand report</button>
+                <button className="btn" onClick={() => setText(SAMPLES[language] || SAMPLES.en)}>{t('voice.useSample')}</button>
+                <button className="btn primary" onClick={parseText} disabled={busy || !text.trim() || !phcId}>{busy ? <span className="spinner" /> : <Icon name="spark" size={14} />}{t('voice.understand')}</button>
               </div>
+              {!phcId && <div className="note">{t('voice.pickPhcFirst')}</div>}
             </div>
           )}
-          {err && <div className="err" style={{ marginTop: 10 }}>{err}</div>}
+          {err && <div className="err" style={{ marginTop: 10 }} role="alert">{err}</div>}
         </Card>
       </div>
 
       {rep && (
-        <Card title="3 · Confirm" icon="check" right={<EngineTag engine={out.engine} />}>
+        <Card title={t('voice.step3')} icon="check" right={<EngineTag engine={out.engine} />}>
           <div className="stack">
             <div className="grid g-2e" style={{ gap: 12 }}>
               <div>
-                <div className="eyebrow">Transcript ({rep.detected_language})</div>
-                <div className="small" style={{ marginTop: 4, lineHeight: 1.55 }}>“{rep.transcript}”</div>
+                <div className="eyebrow">{t('voice.transcript', { language: rep.detected_language })}</div>
+                <div className="small" style={{ marginTop: 4, lineHeight: 1.55 }} lang={rep.detected_language}>“{rep.transcript}”</div>
                 {rep.english_translation && rep.detected_language !== 'en' && (
-                  <div className="small muted" style={{ marginTop: 4 }}>EN: {rep.english_translation}</div>)}
+                  <div className="small muted" style={{ marginTop: 4 }} lang="en">EN: {rep.english_translation}</div>)}
               </div>
-              <div className="say" style={{ fontSize: 14 }}>
+              <div className="say" style={{ fontSize: 'calc(14px * var(--fs, 1))' }} lang={language}>
                 <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <b>Read-back</b>
-                  <button className="btn ghost sm" onClick={() => speak(rep.confirmation, bcp)} title="Play again"><Icon name="speaker" size={15} /></button>
+                  <b>{t('voice.readBack')}</b>
+                  <SpeakButton text={rep.confirmation} language={language} title={t('voice.playAgain')} />
                 </div>
                 {rep.confirmation}
               </div>
@@ -243,52 +297,52 @@ export default function VoiceReport() {
             <div className="parsed-grid">
               {rep.stock.map((s, i) => (
                 <label key={s.drug_code + s.kind} className="f" style={flagged.has(s.drug_code) ? FLAG_STYLE : null}>
-                  <div className="l">{drugName(s.drug_code)?.name} {{ received: '(received)', discarded: '(expired / damaged, thrown away)' }[s.kind] || '(remaining on shelf)'}</div>
-                  <input type="number" value={s.quantity ?? ''} placeholder="not reported" onChange={(e) => editStock(i, e.target.value)} />
-                  <div className="l">{drugName(s.drug_code)?.unit}</div>
+                  <div className="l">{drugLabel(drug(s.drug_code), uiLang)} ({t(`kind.${s.kind || 'remaining'}`)})</div>
+                  <input type="number" value={s.quantity ?? ''} placeholder={t('voice.notReported')} onChange={(e) => editStock(i, e.target.value)} />
+                  <div className="l">{unitLabel(t, drug(s.drug_code)?.unit)}</div>
                 </label>
               ))}
-              {FIELDS.map(([k, l]) => (
+              {FIELDS.map((k) => (
                 <label key={k} className="f" style={flagged.has(k) ? FLAG_STYLE : rep[k] == null ? { borderStyle: 'dashed' } : null}>
-                  <div className="l">{l}</div>
+                  <div className="l">{t(`field.${k}`)}</div>
                   <input type="number" value={rep[k] ?? ''} placeholder="–" onChange={(e) => edit(k, e.target.value)} />
                 </label>
               ))}
             </div>
             {warnings.length > 0 && !saved && (
               <div className="err" role="alert">
-                <b>Please re-check these numbers before submitting:</b>
-                <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w.message}</li>)}</ul>
+                <b>{t('voice.recheck')}</b>
+                <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{warningText(w)}</li>)}</ul>
               </div>
             )}
-            {rep.notes && <div className="note">Notes: {rep.notes}</div>}
+            {rep.notes && <div className="note">{t('voice.notes')} {rep.notes}</div>}
             {rep.follow_up_question && !saved && (
               <div className="note" style={{ borderColor: '#ffc68a', background: 'var(--orange-100)' }}>
-                <div className="row"><b style={{ flex: 1 }}>Follow-up: {rep.follow_up_question}</b>
+                <div className="row"><b style={{ flex: 1 }} lang={language}>{t('voice.followUp')} {rep.follow_up_question}</b>
                   {mode === 'voice'
-                    ? <button className="btn orange sm" onClick={() => (rec ? stop() : start(true))}>{rec ? 'Stop' : <><Icon name="mic" size={14} />Answer</>}</button>
-                    : <span className="muted small">Type the answer above and press “Understand report”, it is merged.</span>}
+                    ? <button className="btn orange sm" onClick={() => (rec ? stop() : start(true))}>{rec ? t('voice.stopShort') : <><Icon name="mic" size={14} />{t('voice.answer')}</>}</button>
+                    : <span className="muted small">{t('voice.followUpType')}</span>}
                 </div>
               </div>
             )}
             {!saved ? (
               <div className="row">
-                <button className="btn primary" onClick={submit} disabled={busy}><Icon name="check" size={15} />{warnings.length ? 'Numbers re-checked, submit' : 'Confirm & submit'}</button>
-                <button className="btn" onClick={reset}>Discard</button>
-                {mode === 'text' && <button className="btn ghost" onClick={() => { followUp.current = true; setText('') }}>Add follow-up answer</button>}
-                {rep.confidence != null && <span className="muted small">confidence {Math.round(rep.confidence * 100)}%</span>}
+                <button className="btn primary" onClick={submit} disabled={busy}><Icon name="check" size={15} />{warnings.length ? t('voice.submitChecked') : t('voice.submit')}</button>
+                <button className="btn" onClick={reset}>{t('voice.discard')}</button>
+                {mode === 'text' && <button className="btn ghost" onClick={() => { followUp.current = true; setText('') }}>{t('voice.addFollowUp')}</button>}
+                {rep.confidence != null && <span className="muted small">{t('voice.confidence', { pct: Math.round(rep.confidence * 100) })}</span>}
               </div>
             ) : (
               <div className="stack">
-                <div className="row"><span className="pill ok"><Icon name="check" size={12} />Saved to warehouse · report #{saved.report_id}</span>
-                  <Link to={`/phc/${phcId}`} className="btn sm">Open {saved.phc} forecast →</Link>
-                  <button className="btn sm" onClick={reset}>New report</button></div>
+                <div className="row"><span className="pill ok"><Icon name="check" size={12} />{t('voice.savedPill', { id: saved.report_id })}</span>
+                  <Link to={`/phc/${phcId}`} className="btn sm">{t('voice.openForecast', { phc: saved.phc })}</Link>
+                  <button className="btn sm" onClick={reset}>{t('voice.newReport')}</button></div>
                 <div className="table-wrap">
                   <table className="t">
-                    <thead><tr><th>Drug</th><th className="r">Stock</th><th className="r">Cover</th><th>Runs out</th><th>Status</th></tr></thead>
+                    <thead><tr><th>{t('th.drug')}</th><th className="r">{t('th.stock')}</th><th className="r">{t('th.cover')}</th><th>{t('th.runsOut')}</th><th>{t('th.status')}</th></tr></thead>
                     <tbody>{saved.items.filter((i) => rep.stock.some((s) => s.drug_code === i.drug_code) || ['critical', 'stocked_out', 'high'].includes(i.status)).map((i) => (
-                      <tr key={i.drug_code}><td>{drugName(i.drug_code)?.name}</td><td className="r num">{fmt(i.stock)}</td>
-                        <td className="r num">{fmt(i.cover_days)}d</td><td>{daysText(i.days_to_stockout)}</td><td><StatusPill status={i.status} /></td></tr>))}
+                      <tr key={i.drug_code}><td>{drugLabel(drug(i.drug_code), uiLang)}</td><td className="r num">{fmt(i.stock)}</td>
+                        <td className="r num">{t('common.daysShort', { n: fmt(i.cover_days) })}</td><td>{daysText(t, i.days_to_stockout)}</td><td><StatusPill status={i.status} /></td></tr>))}
                     </tbody>
                   </table>
                 </div>

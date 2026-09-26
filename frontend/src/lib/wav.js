@@ -32,15 +32,53 @@ function encodeWav(samples, rate) {
   return new Blob([buffer], { type: 'audio/wav' })
 }
 
-export function speak(text, bcp47) {
-  if (!('speechSynthesis' in window) || !text) return false
-  const u = new SpeechSynthesisUtterance(text)
-  u.lang = bcp47
-  const voice = speechSynthesis.getVoices().find((v) => v.lang === bcp47)
-    || speechSynthesis.getVoices().find((v) => v.lang?.startsWith(bcp47.split('-')[0]))
-  if (voice) u.voice = voice
-  u.rate = 0.95
-  speechSynthesis.cancel()
-  speechSynthesis.speak(u)
-  return !!voice || bcp47.startsWith('en')
+// ---------------------------------------------------------------- read-aloud
+// The browser's voice list loads asynchronously (it is empty on the first call), and most
+// Windows / many Android devices have no Tamil, Kannada or Odia voice at all. So: use a device
+// voice when one exists for the language, otherwise play Gemini TTS audio from the server.
+let voicesPromise = null
+function deviceVoices() {
+  if (!('speechSynthesis' in window)) return Promise.resolve([])
+  const now = speechSynthesis.getVoices()
+  if (now.length) return Promise.resolve(now)
+  voicesPromise ||= new Promise((resolve) => {
+    const done = () => resolve(speechSynthesis.getVoices())
+    speechSynthesis.addEventListener('voiceschanged', done, { once: true })
+    setTimeout(done, 1500)
+  })
+  return voicesPromise
+}
+
+function voiceFor(voices, bcp47) {
+  const lang = bcp47.toLowerCase()
+  const base = lang.split('-')[0]
+  return voices.find((v) => v.lang?.toLowerCase().replace('_', '-') === lang)
+    || voices.find((v) => v.lang?.toLowerCase().split(/[-_]/)[0] === base)
+}
+
+let playing = null
+export function stopSpeaking() {
+  if ('speechSynthesis' in window) speechSynthesis.cancel()
+  if (playing) { playing.pause(); playing = null }
+}
+
+/** Speak `text` in `bcp47` (e.g. "ta-IN"). Resolves to 'device' or 'gemini'; rejects with a
+ *  readable message when neither a device voice nor server read-aloud is available. */
+export async function speak(text, bcp47, { fetchAudio } = {}) {
+  if (!text) return null
+  stopSpeaking()
+  const voice = voiceFor(await deviceVoices(), bcp47)
+  if (voice) {
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = voice.lang; u.voice = voice; u.rate = 0.95
+    speechSynthesis.speak(u)
+    return 'device'
+  }
+  if (!fetchAudio) throw Object.assign(new Error(`No voice for ${bcp47} on this device`), { code: 'no-voice' })
+  const url = URL.createObjectURL(await fetchAudio(text))
+  const audio = new Audio(url)
+  audio.onended = () => URL.revokeObjectURL(url)
+  playing = audio
+  await audio.play()
+  return 'gemini'
 }

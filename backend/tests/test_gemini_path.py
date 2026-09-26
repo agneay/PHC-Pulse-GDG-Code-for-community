@@ -46,6 +46,35 @@ def test_voice_upload_uses_gemini(monkeypatch):
     assert len(seen["parts"]) == 2                                       # prompt + audio part
 
 
+def test_tts_returns_wav(monkeypatch):
+    from types import SimpleNamespace
+    seen = {}
+
+    class Models:
+        def generate_content(self, model, contents, config):
+            seen["model"], seen["lang"] = model, config.speech_config.language_code
+            part = SimpleNamespace(inline_data=SimpleNamespace(data=b"\x00\x01" * 2400,
+                                                               mime_type="audio/L16;codec=pcm;rate=24000"))
+            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
+
+    fake = SimpleNamespace(models=Models())
+    monkeypatch.setattr(gemini, "client", lambda: fake)
+    gemini._tts_cache.clear()
+    with TestClient(app) as c:
+        assert c.post("/api/tts", json={"text": "நன்றி", "language": "ta"}).status_code == 401
+        r = c.post("/api/tts", headers=_auth(c), json={"text": "நன்றி", "language": "ta"})
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
+    assert r.content[:4] == b"RIFF" and r.content[8:12] == b"WAVE"
+    assert seen == {"model": gemini.config.GEMINI_TTS_MODEL, "lang": "ta-IN"}
+
+
+def test_tts_without_gemini_is_explicit(monkeypatch):
+    monkeypatch.setattr(gemini, "client", lambda: None)
+    with TestClient(app) as c:
+        r = c.post("/api/tts", headers=_auth(c), json={"text": "hello", "language": "en"})
+    assert r.status_code == 503
+
+
 def test_voice_without_gemini_is_explicit(monkeypatch):
     monkeypatch.setattr(gemini, "client", lambda: None)
     with TestClient(app) as c:

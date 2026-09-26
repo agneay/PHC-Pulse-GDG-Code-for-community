@@ -287,7 +287,8 @@ def _fallback_briefing(s: dict) -> dict:
 
 ASK_PROMPT = """You are PHC Pulse Copilot for Indian public-health officers. Answer the question
 using ONLY the live snapshot below. Be concise (<= 120 words), cite PHC codes and numbers, and
-answer in the language of the question. If the snapshot doesn't contain the answer, say so.
+answer in the language of the question{site_language}. If the snapshot doesn't contain the answer,
+say so.
 
 Snapshot (JSON):
 {snapshot}
@@ -295,7 +296,7 @@ Snapshot (JSON):
 Question: {question}"""
 
 
-def ask(question: str, snapshot: dict) -> dict:
+def ask(question: str, snapshot: dict, language: Optional[str] = None) -> dict:
     if client() is None:
         return {"answer": "Gemini is not configured on this deployment, so free-form questions are "
                           "unavailable. Set GEMINI_API_KEY (or Vertex AI) to enable the copilot.",
@@ -303,12 +304,63 @@ def ask(question: str, snapshot: dict) -> dict:
     try:
         resp = client().models.generate_content(
             model=config.GEMINI_MODEL,
-            contents=[ASK_PROMPT.format(snapshot=json.dumps(snapshot, ensure_ascii=False),
-                                        question=question)])
+            contents=[ASK_PROMPT.format(
+                snapshot=json.dumps(snapshot, ensure_ascii=False), question=question,
+                site_language=(f" (the officer is using the site in {LANGUAGES[language]['name']}; "
+                               f"use it when the question's language is unclear)")
+                if language in LANGUAGES and language != "en" else "")])
         return {"answer": resp.text, "engine": config.GEMINI_MODEL}
     except Exception as e:
         log.exception("Gemini ask failed")
         return {"answer": f"Gemini request failed: {e}", "engine": "error"}
+
+
+_tts_cache = {}          # (language, text) -> wav bytes; read-backs repeat a lot ("play again")
+
+
+def tts(text: str, language: str) -> bytes:
+    """Speak `text` in `language` with Gemini TTS; returns a WAV file. Used when the worker's
+    device has no voice for the language (most Windows PCs ship only English voices)."""
+    if client() is None:
+        raise RuntimeError("Read-aloud needs Gemini (set GEMINI_API_KEY) or a voice for this "
+                           "language installed on the device.")
+    key = (language, text)
+    if key in _tts_cache:
+        return _tts_cache[key]
+    from google.genai import types
+    lang = LANGUAGES.get(language, LANGUAGES["en"])
+    resp = client().models.generate_content(
+        model=config.GEMINI_TTS_MODEL,
+        contents=f"Read this aloud in {lang['name']}, clearly and warmly, at a calm pace: {text}",
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                language_code=lang["bcp47"],
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=config.GEMINI_TTS_VOICE)))))
+    blob = resp.candidates[0].content.parts[0].inline_data
+    wav = _pcm_to_wav(blob.data, blob.mime_type or "")
+    if len(_tts_cache) > 200:
+        _tts_cache.clear()
+    _tts_cache[key] = wav
+    return wav
+
+
+def _pcm_to_wav(pcm: bytes, mime: str) -> bytes:
+    """Gemini returns raw 16-bit mono PCM ("audio/L16;codec=pcm;rate=24000"); browsers need WAV."""
+    import io
+    import re
+    import wave
+    if pcm[:4] == b"RIFF":
+        return pcm
+    m = re.search(r"rate=(\d+)", mime)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(m.group(1)) if m else 24000)
+        w.writeframes(pcm)
+    return buf.getvalue()
 
 
 class AlertDraft(BaseModel):
