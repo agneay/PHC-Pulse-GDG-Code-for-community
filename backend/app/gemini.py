@@ -13,6 +13,8 @@ configured, and reports which engine produced the output.
 """
 import json
 import logging
+import re
+import time
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -26,21 +28,86 @@ _client = None
 _client_err = None
 
 
+def _is_daily_quota(e: Exception) -> bool:
+    """Detect if error is due to exhausted daily quota (should NOT retry)."""
+    err_str = str(e).lower()
+    daily_keywords = [
+        "per day",
+        "daily",
+        "generate_content_requests_per_day",
+        "quota exceeded for quota metric",
+        "free tier daily limit",
+        "limit_exceeded",
+    ]
+    if any(k in err_str for k in daily_keywords):
+        return True
+    if ("429" in err_str or "resource_exhausted" in err_str) and "quota" in err_str:
+        if "per minute" not in err_str and "rpm" not in err_str and "retry-after" not in err_str:
+            return True
+    return False
+
+
+def _is_transient(e: Exception) -> bool:
+    """Detect transient errors (503, temporary rate limits, network timeouts) eligible for bounded retry."""
+    if _is_daily_quota(e):
+        return False
+    err_str = str(e).lower()
+    transient_keywords = [
+        "503", "unavailable", "timeout", "timed out", "connection reset",
+        "temporarily unavailable", "connection error", "502", "504",
+        "per minute", "rpm", "too many requests", "retry-after"
+    ]
+    if any(k in err_str for k in transient_keywords):
+        return True
+    code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    if code in (503, 502, 504):
+        return True
+    return False
+
+
+def _clean_error_message(e: Exception) -> str:
+    """Clean, user-friendly error message preventing API keys and raw RPC traces from leaking."""
+    err_str = str(e) if e else ""
+    if _is_daily_quota(e) or (("quota" in err_str.lower() or "resource_exhausted" in err_str.lower()) and "429" in err_str):
+        return "Gemini is temporarily unavailable because the API quota has been reached. Please try again later."
+    if _is_transient(e) or "503" in err_str or "unavailable" in err_str.lower():
+        return "Gemini is temporarily unavailable. Please try again in a few moments."
+
+    # Redact API key or tokens if present
+    key = getattr(config, "GEMINI_API_KEY", None) or config.get_gemini_api_key()
+    if key and key in err_str:
+        err_str = err_str.replace(key, "[REDACTED]")
+    err_str = re.sub(r'(api[_-]?key|token|credential|\bkey\b)[=:\s]+["\']?[a-zA-Z0-9_\-]{8,}["\']?',
+                     r'\1=[REDACTED]', err_str, flags=re.IGNORECASE)
+
+    # Strip internal stack/RPC markers
+    if any(marker in err_str for marker in ("google.genai", "RPC failed", "grpc", "Traceback")):
+        return "Gemini request failed due to a temporary service error. Please try again."
+
+    if len(err_str) > 200:
+        return "Gemini request failed due to an unexpected error. Please try again."
+
+    return err_str or "Gemini service encountered an error."
+
+
 def client():
     global _client, _client_err
-    if _client is not None or _client_err is not None:
+    if _client is not None:
         return _client
+    key = config.get_gemini_api_key()
     try:
         from google import genai
         if config.USE_VERTEX:
             _client = genai.Client(vertexai=True, project=config.GCP_PROJECT,
                                    location=config.GCP_LOCATION)
-        elif config.GEMINI_API_KEY:
-            _client = genai.Client(api_key=config.GEMINI_API_KEY)
+            _client_err = None
+        elif key:
+            _client = genai.Client(api_key=key)
+            _client_err = None
         else:
             _client_err = "no GEMINI_API_KEY / Vertex AI configured"
     except Exception as e:  # pragma: no cover
-        _client_err = str(e)
+        _client_err = _clean_error_message(e)
     return _client
 
 
@@ -116,14 +183,32 @@ If an important item is missing (beds, staff, OPD, or paracetamol/ORS stock) wri
 
 def _gen_json(contents, schema):
     from google.genai import types
-    resp = client().models.generate_content(
-        model=config.GEMINI_MODEL, contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=schema, temperature=0.1))
-    if getattr(resp, "parsed", None) is not None:
-        p = resp.parsed
-        return p.model_dump() if hasattr(p, "model_dump") else p
-    return json.loads(resp.text)
+    c = client()
+    if c is None:
+        raise RuntimeError("Gemini client is not configured")
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = c.models.generate_content(
+                model=config.GEMINI_MODEL, contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", response_schema=schema, temperature=0.1))
+            if getattr(resp, "parsed", None) is not None:
+                p = resp.parsed
+                return p.model_dump() if hasattr(p, "model_dump") else p
+            return json.loads(resp.text)
+        except Exception as e:
+            last_err = e
+            if _is_daily_quota(e):
+                log.warning("Gemini daily quota exhausted: %s", _clean_error_message(e))
+                break
+            if _is_transient(e) and attempt < 2:
+                delay = 0.5 * (2 ** attempt)
+                log.info("Gemini transient error on attempt %d (%s), retrying in %.1fs...", attempt + 1, e, delay)
+                time.sleep(delay)
+                continue
+            break
+    raise last_err
 
 
 def parse_report(*, phc: dict, district: str, state: str, language: str,
@@ -155,7 +240,7 @@ def parse_report(*, phc: dict, district: str, state: str, language: str,
         except Exception as e:
             log.exception("Gemini parse failed")
             if not text:
-                raise RuntimeError(f"Gemini could not process the audio: {e}") from e
+                raise RuntimeError(_clean_error_message(e)) from None
     if not text:
         raise RuntimeError("Audio understanding needs Gemini. Configure GEMINI_API_KEY, or use the "
                            "browser speech-to-text / text mode.")
@@ -297,22 +382,104 @@ Question: {question}"""
 
 
 def ask(question: str, snapshot: dict, language: Optional[str] = None) -> dict:
-    if client() is None:
+    c = client()
+    if c is not None:
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = c.models.generate_content(
+                    model=config.GEMINI_MODEL,
+                    contents=[ASK_PROMPT.format(
+                        snapshot=json.dumps(snapshot, ensure_ascii=False), question=question,
+                        site_language=(f" (the officer is using the site in {LANGUAGES[language]['name']}; "
+                                       f"use it when the question's language is unclear)")
+                        if language in LANGUAGES and language != "en" else "")])
+                return {"answer": resp.text, "engine": config.GEMINI_MODEL}
+            except Exception as e:
+                last_err = e
+                if _is_daily_quota(e):
+                    log.warning("Gemini daily quota exhausted in ask: %s", _clean_error_message(e))
+                    break
+                if _is_transient(e) and attempt < 2:
+                    delay = 0.5 * (2 ** attempt)
+                    log.info("Gemini transient error in ask attempt %d (%s), retrying in %.1fs...", attempt + 1, e, delay)
+                    time.sleep(delay)
+                    continue
+                break
+        log.warning("Gemini ask failed, falling back to deterministic rules: %s", last_err)
+        return _fallback_ask(question, snapshot, language=language, reason=_clean_error_message(last_err))
+
+    return _fallback_ask(question, snapshot, language=language, reason="not_configured")
+
+
+def _fallback_ask(question: str, snapshot: dict, language: Optional[str] = None, reason: Optional[str] = None) -> dict:
+    if reason == "not_configured":
         return {"answer": "Gemini is not configured on this deployment, so free-form questions are "
                           "unavailable. Set GEMINI_API_KEY (or Vertex AI) to enable the copilot.",
                 "engine": "rules-fallback"}
-    try:
-        resp = client().models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=[ASK_PROMPT.format(
-                snapshot=json.dumps(snapshot, ensure_ascii=False), question=question,
-                site_language=(f" (the officer is using the site in {LANGUAGES[language]['name']}; "
-                               f"use it when the question's language is unclear)")
-                if language in LANGUAGES and language != "en" else "")])
-        return {"answer": resp.text, "engine": config.GEMINI_MODEL}
-    except Exception as e:
-        log.exception("Gemini ask failed")
-        return {"answer": f"Gemini request failed: {e}", "engine": "error"}
+
+    q = question.lower()
+    k = snapshot.get("kpis", {})
+    scope = snapshot.get("scope", "PHC network")
+    date = snapshot.get("date", "today")
+
+    parts = []
+    if any(w in q for w in ("stock", "medicine", "shortage", "drug", "paracetamol", "ors", "supply")):
+        risks = snapshot.get("stock_risks", [])
+        if risks:
+            top_risks = [f"{r['phc']}: {r['drug']} ({r['stock']:g} left, runs out in {r['days_to_stockout']}d)" for r in risks[:4]]
+            parts.append(f"Stock status for {scope} ({date}): {k.get('predicted_stockouts', 0)} predicted stockouts, "
+                         f"{k.get('stocked_out_items', 0)} items currently at zero stock. "
+                         f"Critical lines: {'; '.join(top_risks)}.")
+        else:
+            parts.append(f"All monitored drug lines in {scope} are adequately stocked.")
+
+    elif any(w in q for w in ("transfer", "shipment", "reallocat", "peer")):
+        transfers = snapshot.get("top_transfers", [])
+        if transfers:
+            lines = [f"{t['from']} -> {t['to']} (" + ", ".join(f"{l['qty']:g} {l['drug']}" for l in t['lines']) + f", needed in {t['urgency_days']}d)" for t in transfers[:3]]
+            parts.append(f"Recommended peer transfers ({k.get('recommended_transfers', 0)} total): " + "; ".join(lines) + ".")
+        else:
+            parts.append(f"No active peer transfers recommended for {scope}.")
+
+    elif any(w in q for w in ("outbreak", "cluster", "fever", "diarrh", "respiratory", "surge")):
+        clusters = snapshot.get("clusters", [])
+        if clusters:
+            cdesc = [f"{c['syndrome']} cluster in {c['district']} ({len(c['phcs'])} PHCs, ~{c['excess_cases']} excess cases)" for c in clusters[:2]]
+            parts.append(f"Outbreak surveillance for {scope}: {k.get('outbreak_clusters', 0)} cluster(s) detected. " + "; ".join(cdesc) + ".")
+        else:
+            parts.append(f"No syndromic outbreak clusters detected in {scope} as of {date}.")
+
+    elif any(w in q for w in ("bed", "occupancy", "staff", "attendance")):
+        occ = round(100 * (k.get("bed_occupancy") or 0))
+        att = round(100 * (k.get("staff_attendance") or 0))
+        parts.append(f"Operational capacity in {scope}: bed occupancy is {occ}%, and staff attendance is {att}%. "
+                     f"{k.get('phcs_reporting_today', 0)} of {k.get('phcs', 0)} PHCs reported today.")
+
+    else:
+        occ = round(100 * (k.get("bed_occupancy") or 0))
+        att = round(100 * (k.get("staff_attendance") or 0))
+        parts.append(
+            f"Deterministic rules snapshot for {scope} ({date}): "
+            f"{k.get('phcs_reporting_today', 0)}/{k.get('phcs', 0)} PHCs reporting. "
+            f"{k.get('predicted_stockouts', 0)} predicted stockouts, "
+            f"{k.get('stocked_out_items', 0)} stocked-out items, "
+            f"{k.get('outbreak_clusters', 0)} outbreak cluster(s), and "
+            f"{k.get('recommended_transfers', 0)} recommended transfers. "
+            f"Bed occupancy: {occ}%, staff attendance: {att}%."
+        )
+
+    prefix = ""
+    if reason:
+        if "quota" in reason.lower():
+            prefix = "Gemini is temporarily unavailable because the API quota has been reached. Showing deterministic rules-based analysis:\n\n"
+        else:
+            prefix = "Gemini is temporarily unavailable. Showing deterministic rules-based analysis:\n\n"
+
+    return {
+        "answer": prefix + "\n\n".join(parts),
+        "engine": "rules-fallback"
+    }
 
 
 _tts_cache = {}          # (language, text) -> wav bytes; read-backs repeat a lot ("play again")
@@ -329,21 +496,25 @@ def tts(text: str, language: str) -> bytes:
         return _tts_cache[key]
     from google.genai import types
     lang = LANGUAGES.get(language, LANGUAGES["en"])
-    resp = client().models.generate_content(
-        model=config.GEMINI_TTS_MODEL,
-        contents=f"Read this aloud in {lang['name']}, clearly and warmly, at a calm pace: {text}",
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                language_code=lang["bcp47"],
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=config.GEMINI_TTS_VOICE)))))
-    blob = resp.candidates[0].content.parts[0].inline_data
-    wav = _pcm_to_wav(blob.data, blob.mime_type or "")
-    if len(_tts_cache) > 200:
-        _tts_cache.clear()
-    _tts_cache[key] = wav
-    return wav
+    try:
+        resp = client().models.generate_content(
+            model=config.GEMINI_TTS_MODEL,
+            contents=f"Read this aloud in {lang['name']}, clearly and warmly, at a calm pace: {text}",
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    language_code=lang["bcp47"],
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=config.GEMINI_TTS_VOICE)))))
+        blob = resp.candidates[0].content.parts[0].inline_data
+        wav = _pcm_to_wav(blob.data, blob.mime_type or "")
+        if len(_tts_cache) > 200:
+            _tts_cache.clear()
+        _tts_cache[key] = wav
+        return wav
+    except Exception as e:
+        log.exception("Gemini TTS failed")
+        raise RuntimeError(_clean_error_message(e)) from None
 
 
 def _pcm_to_wav(pcm: bytes, mime: str) -> bytes:

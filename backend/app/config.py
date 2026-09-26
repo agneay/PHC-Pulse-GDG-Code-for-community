@@ -4,17 +4,43 @@ from datetime import date
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+import sys
+
+# Attempt to load .env from backend/ or project root (skip when running tests to avoid live API calls)
+if "pytest" not in sys.modules and "py.test" not in sys.modules and not os.getenv("PYTEST_CURRENT_TEST"):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(BASE_DIR.parent / ".env")
+        load_dotenv(BASE_DIR / ".env")
+    except ImportError:
+        for env_path in (BASE_DIR.parent / ".env", BASE_DIR / ".env"):
+            if env_path.is_file():
+                try:
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k, v = k.strip(), v.strip().strip("'\"")
+                            if k and k not in os.environ:
+                                os.environ[k] = v
+                except Exception:
+                    pass
+
 DB_PATH = Path(os.getenv("PHC_DB_PATH", BASE_DIR / "data" / "phc_pulse.db"))
 STATIC_DIR = Path(os.getenv("PHC_STATIC_DIR", BASE_DIR.parent / "frontend" / "dist"))
 
 # Gemini: either an AI Studio key, or Vertex AI via Application Default Credentials.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def get_gemini_api_key():
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+GEMINI_API_KEY = get_gemini_api_key()
 USE_VERTEX = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes")
 GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 # Read-aloud fallback for devices without an Indian-language voice.
-GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts")
 GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore")
 
 # Token signing for the demo role-based access (row-level scoping by state/district/PHC).

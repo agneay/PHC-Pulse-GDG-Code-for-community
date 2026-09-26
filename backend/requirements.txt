@@ -5,3 +5,4 @@ scipy==1.17.1
 google-genai==2.25.0
 pydantic==2.13.4
 python-multipart==0.0.32
+python-dotenv>=1.0.0

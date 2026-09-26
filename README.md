@@ -67,7 +67,7 @@ scripts/             Cloud Run deploy, BigQuery export
 
 ## Google AI & Cloud usage
 
-* **Gemini** (`gemini-2.5-flash` by default, set `GEMINI_MODEL` to change it), via AI Studio key or Vertex AI:
+* **Gemini** (`gemini-3.8-flash` by default, set `GEMINI_MODEL` to change it), via AI Studio key or Vertex AI:
   1. **Multimodal voice understanding:** 16 kHz WAV → transcript, translation and a schema-validated `ParsedReport` (response schema, so no free-text parsing). Hallucinated drug codes are dropped server-side. Follow-up answers are merged into the earlier partial report.
   2. **Daily briefing** for the officer's jurisdiction in their language.
   3. **Ask Pulse** copilot: grounded Q&A over the live snapshot.

@@ -67,18 +67,20 @@ def compute(allow_cross_state: bool = False) -> dict:
     closing = np.full((N, D, T), np.nan)
     for r in stock_rows:
         t = (date.fromisoformat(r["day"]) - first).days
-        i, j = pidx[r["phc_id"]], didx[r["drug_code"]]
-        closing[i, j, t] = r["closing"]
-        if r["dispensed"] is not None:          # rows opened only by a transfer carry no demand
-            demand[i, j, t] = r["dispensed"] + (r["unmet"] or 0)
+        if 0 <= t < T:
+            i, j = pidx[r["phc_id"]], didx[r["drug_code"]]
+            closing[i, j, t] = r["closing"]
+            if r["dispensed"] is not None:          # rows opened only by a transfer carry no demand
+                demand[i, j, t] = r["dispensed"] + (r["unmet"] or 0)
     foot = {k: np.full((N, T), np.nan) for k in ("opd", "fever", "diarrhoea", "respiratory",
                                                   "beds_occupied", "staff_present")}
     for r in foot_rows:
         t = (date.fromisoformat(r["day"]) - first).days
-        i = pidx[r["phc_id"]]
-        for k in foot:
-            if r[k] is not None:
-                foot[k][i, t] = r[k]
+        if 0 <= t < T:
+            i = pidx[r["phc_id"]]
+            for k in foot:
+                if r[k] is not None:
+                    foot[k][i, t] = r[k]
 
     # ---- forecasting ---------------------------------------------------------------------
     S = N * D

@@ -15,7 +15,7 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-asia-south1}"           # Mumbai
 SERVICE="${SERVICE:-phc-pulse}"
 MIN_INSTANCES="${MIN_INSTANCES:-0}"
-MODEL="${GEMINI_MODEL:-gemini-2.5-flash}"
+MODEL="${GEMINI_MODEL:-gemini-3.8-flash}"
 
 echo "Deploying $SERVICE to project=$PROJECT region=$REGION"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
